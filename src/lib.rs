@@ -60,6 +60,7 @@ pub mod compaction_filter;
 mod db;
 mod db_options;
 mod slice_transform;
+pub mod transactiondb;
 
 pub use compaction_filter::Decision as CompactionDecision;
 pub use db::{DBCompactionStyle, DBCompressionType, DBIterator, DBRawIterator, DBRecoveryMode,
