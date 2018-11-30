@@ -15,6 +15,8 @@
 // Software written by Steven Sloboda <ssloboda@starry.com>.
 
 // NOTE no support implemented yet for OptimisticTransactionDb
+// NOTE this entire repo is in need of a refactor because the current structure/API doesn't cleanly
+// allow for mutilple database types.
 
 use libc::{/*self,*/ c_char, /*c_int*,*/ c_uchar, /*c_void,*/ size_t};
 // use std::collections::BTreeMap;
