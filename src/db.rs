@@ -204,6 +204,11 @@ impl DBRawIterator {
         unsafe { DBRawIterator { inner: ffi::rocksdb_create_iterator(db.inner, readopts.inner) } }
     }
 
+    // FIXME gross
+    pub(crate) fn new_xxx(db: *mut ffi::rocksdb_t, readopts: &ReadOptions) -> DBRawIterator {
+        unsafe { DBRawIterator { inner: ffi::rocksdb_create_iterator(db, readopts.inner) } }
+    }
+
     fn new_cf(
         db: &DB,
         cf_handle: ColumnFamily,
@@ -212,6 +217,19 @@ impl DBRawIterator {
         unsafe {
             Ok(DBRawIterator {
                 inner: ffi::rocksdb_create_iterator_cf(db.inner, readopts.inner, cf_handle.inner),
+            })
+        }
+    }
+
+    // FIXME gross
+    pub(crate) fn new_cf_xxx(
+        db: *mut ffi::rocksdb_t,
+        cf_handle: ColumnFamily,
+        readopts: &ReadOptions,
+    ) -> Result<DBRawIterator, Error> {
+        unsafe {
+            Ok(DBRawIterator {
+                inner: ffi::rocksdb_create_iterator_cf(db, readopts.inner, cf_handle.inner),
             })
         }
     }
@@ -445,6 +463,17 @@ impl DBIterator {
         rv
     }
 
+    // FIXME gross
+    pub(crate) fn new_xxx(db: *mut ffi::rocksdb_t, readopts: &ReadOptions, mode: IteratorMode) -> DBIterator {
+        let mut rv = DBIterator {
+            raw: DBRawIterator::new_xxx(db, readopts),
+            direction: Direction::Forward, // blown away by set_mode()
+            just_seeked: false,
+        };
+        rv.set_mode(mode);
+        rv
+    }
+
     fn new_cf(
         db: &DB,
         cf_handle: ColumnFamily,
@@ -453,6 +482,22 @@ impl DBIterator {
     ) -> Result<DBIterator, Error> {
         let mut rv = DBIterator {
             raw: try!(DBRawIterator::new_cf(db, cf_handle, readopts)),
+            direction: Direction::Forward, // blown away by set_mode()
+            just_seeked: false,
+        };
+        rv.set_mode(mode);
+        Ok(rv)
+    }
+
+    // FIXME gross
+    pub(crate) fn new_cf_xxx(
+        db: *mut ffi::rocksdb_t,
+        cf_handle: ColumnFamily,
+        readopts: &ReadOptions,
+        mode: IteratorMode,
+    ) -> Result<DBIterator, Error> {
+        let mut rv = DBIterator {
+            raw: try!(DBRawIterator::new_cf_xxx(db, cf_handle, readopts)),
             direction: Direction::Forward, // blown away by set_mode()
             just_seeked: false,
         };
