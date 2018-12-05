@@ -14,9 +14,20 @@
 //
 // Software written by Steven Sloboda <ssloboda@starry.com>.
 
-use libc::{c_char, c_uchar, size_t};
+use libc::{c_char, c_uchar};
 
-use {Error, ReadOptions, DBVector};
+use {
+    Error,
+    ColumnFamily,
+    ReadOptions,
+    DBVector,
+    DBRawIterator,
+    DBIterator,
+    IteratorMode,
+    Direction,
+    Snapshot,
+    base_db::BaseDb
+};
 use ffi;
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -99,8 +110,11 @@ impl OptimisticTransactionOptions {
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
 pub struct Transaction {
-    pub(crate) inner: *mut ffi::rocksdb_transaction_t
+    pub(crate) inner: *mut ffi::rocksdb_transaction_t // FIXME no pub
 }
+
+// FIXME is this okay to assume?
+unsafe impl Send for Transaction {}
 
 impl Drop for Transaction {
     fn drop(&mut self) {
@@ -109,6 +123,10 @@ impl Drop for Transaction {
 }
 
 impl Transaction {
+    pub(crate) fn new(txn: *mut ffi::rocksdb_transaction_t) -> Self {
+        Self { inner: txn }
+    }
+
     pub fn commit(&self) -> Result<(), Error> {
         Ok(unsafe { ffi_try!(ffi::rocksdb_transaction_commit(self.inner,)) })
     }
@@ -125,7 +143,13 @@ impl Transaction {
         Ok(unsafe { ffi_try!(ffi::rocksdb_transaction_rollback_to_savepoint(self.inner,)) })
     }
 
-    // pub fn transaction_get_snapshot() {} // TODO implement
+    pub(crate) fn get_raw_snapshot(&self) -> *const ffi::rocksdb_snapshot_t {
+        unsafe { ffi::rocksdb_transaction_get_snapshot(self.inner) }
+    }
+
+    pub fn get_snapshot<'a>(&'a self, db: &'a BaseDb) -> Snapshot<'a> {
+        Snapshot::new_from_txn(db, &self)
+    }
 
     pub fn get(&self, key: &[u8]) -> Result<Option<DBVector>, Error> {
         let readopts = ReadOptions::default();
@@ -133,7 +157,7 @@ impl Transaction {
     }
 
     pub fn get_opt(&self, key: &[u8], options: &ReadOptions) -> Result<Option<DBVector>, Error> {
-        let mut val_len: size_t = 0;
+        let mut val_len = 0;
         let val = unsafe {
             ffi_try!(ffi::rocksdb_transaction_get(
                 self.inner,
@@ -151,8 +175,77 @@ impl Transaction {
         }
     }
 
-    // pub fn transaction_get_cf() {}  // TODO implement
-    // pub fn transaction_get_for_update() {}  // TODO implement
+    pub fn get_cf(&self, cf: ColumnFamily, key: &[u8]) -> Result<Option<DBVector>, Error> {
+        let readopts = ReadOptions::default();
+        self.get_cf_opt(cf, key, &readopts)
+    }
+
+    pub fn get_cf_opt(
+        &self,
+        cf: ColumnFamily,
+        key: &[u8],
+        readopts: &ReadOptions,
+    ) -> Result<Option<DBVector>, Error> {
+        // FIXME this check is copypasta from BaseDb
+        if readopts.inner.is_null() {
+            return Err(Error::new("\
+                Unable to create RocksDB read options. This is a fairly trivial call, and its \
+                failure may be indicative of a mis-compiled or mis-loaded RocksDB library. \
+            ".to_owned()));
+        }
+
+        let mut val_len = 0;
+        let val = unsafe {
+            ffi_try!(ffi::rocksdb_transaction_get_cf(
+                self.inner,
+                readopts.inner,
+                cf.inner,
+                key.as_ptr() as *const c_char,
+                key.len(),
+                &mut val_len,
+            ))
+        } as *mut u8;
+
+        Ok(
+            // FIXME this conversion is copied in a few places
+            if val.is_null() {
+                None
+            } else {
+                Some(unsafe { DBVector::from_c(val, val_len) })
+            }
+        )
+    }
+
+    pub fn get_for_update(&self, key: &[u8]) -> Result<Option<DBVector>, Error> {
+        let readopts = ReadOptions::default();
+        self.get_for_update_opt(key, &readopts)
+    }
+
+    pub fn get_for_update_opt(
+        &self,
+        key: &[u8],
+        readopts: &ReadOptions
+    ) -> Result<Option<DBVector>, Error> {
+        let mut val_len = 0;
+        let val = unsafe {
+            ffi_try!(ffi::rocksdb_transaction_get_for_update(
+                self.inner,
+                readopts.inner,
+                key.as_ptr() as *const c_char,
+                key.len(),
+                &mut val_len,
+                true as c_uchar,
+            ))
+        } as *mut u8;
+
+        Ok(
+            if val.is_null() {
+                None
+            } else {
+                Some(unsafe { DBVector::from_c(val, val_len) })
+            }
+        )
+    }
 
     pub fn put(&self, key: &[u8], value: &[u8]) -> Result<(), Error> {
         Ok(unsafe {
@@ -166,7 +259,19 @@ impl Transaction {
         })
     }
 
-    // pub fn transaction_put_cf() {}  // TODO implement
+    pub fn put_cf(&self, cf: ColumnFamily, key: &[u8], value: &[u8]) -> Result<(), Error> {
+        unsafe {
+            ffi_try!(ffi::rocksdb_transaction_put_cf(
+                self.inner,
+                cf.inner,
+                key.as_ptr() as *const c_char,
+                key.len(),
+                value.as_ptr() as *const c_char,
+                value.len(),
+            ));
+        }
+        Ok(())
+    }
 
     pub fn merge(&self, key: &[u8], value: &[u8]) -> Result<(), Error> {
         Ok(unsafe {
@@ -190,7 +295,91 @@ impl Transaction {
         })
     }
 
-    // pub fn transaction_delete_cf() {}  // TODO implement
-    // pub fn transaction_create_iterator() {}  // TODO implement
-    // pub fn transaction_create_iterator_cf() {}  // TODO implement
+    pub fn transaction_delete_cf(&self, cf: ColumnFamily, key: &[u8]) -> Result<(), Error> {
+        unsafe {
+            ffi_try!(ffi::rocksdb_transaction_delete_cf(
+                self.inner,
+                cf.inner,
+                key.as_ptr() as *const c_char,
+                key.len(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn raw_iterator(&self) -> DBRawIterator {
+        let readopts = ReadOptions::default();
+        self.raw_iterator_opt(&readopts)
+    }
+
+    pub fn raw_iterator_opt(&self, readopts: &ReadOptions) -> DBRawIterator {
+        let iter = unsafe { ffi::rocksdb_transaction_create_iterator(self.inner, readopts.inner) };
+        DBRawIterator { inner: iter }  // FIXME
+    }
+
+    pub fn iterator(&self, mode: IteratorMode) -> DBIterator {
+        let opts = ReadOptions::default();
+        DBIterator::new_from_txn(&self, &opts, mode)
+    }
+
+    /// Opens an interator with `set_total_order_seek` enabled.
+    /// This must be used to iterate across prefixes when `set_memtable_factory` has been called
+    /// with a Hash-based implementation.
+    pub fn full_iterator(&self, mode: IteratorMode) -> DBIterator {
+        let mut opts = ReadOptions::default();
+        opts.set_total_order_seek(true);
+        DBIterator::new_from_txn(&self, &opts, mode)
+    }
+
+    pub fn prefix_iterator<'p>(&self, prefix: &'p [u8]) -> DBIterator {
+        let mut opts = ReadOptions::default();
+        opts.set_prefix_same_as_start(true);
+        DBIterator::new_from_txn(&self, &opts, IteratorMode::From(prefix, Direction::Forward))
+    }
+
+    pub fn raw_iterator_cf(&self, cf: ColumnFamily) -> DBRawIterator {
+        let readopts = ReadOptions::default();
+        self.raw_iterator_cf_opt(cf, &readopts)
+    }
+
+    pub fn raw_iterator_cf_opt(&self, cf: ColumnFamily, readopts: &ReadOptions) -> DBRawIterator {
+        let iter = unsafe {
+            ffi::rocksdb_transaction_create_iterator_cf(self.inner, readopts.inner, cf.inner)
+        };
+        DBRawIterator { inner: iter }  // FIXME
+    }
+
+    pub fn iterator_cf(
+        &self,
+        cf_handle: ColumnFamily,
+        mode: IteratorMode,
+    ) -> Result<DBIterator, Error> {
+        let opts = ReadOptions::default();
+        DBIterator::new_cf_from_txn(&self, cf_handle, &opts, mode)
+    }
+
+    pub fn full_iterator_cf(
+        &self,
+        cf_handle: ColumnFamily,
+        mode: IteratorMode,
+    ) -> Result<DBIterator, Error> {
+        let mut opts = ReadOptions::default();
+        opts.set_total_order_seek(true);
+        DBIterator::new_cf_from_txn(&self, cf_handle, &opts, mode)
+    }
+
+    pub fn prefix_iterator_cf<'p>(
+        &self,
+        cf_handle: ColumnFamily,
+        prefix: &'p [u8]
+    ) -> Result<DBIterator, Error> {
+        let mut opts = ReadOptions::default();
+        opts.set_prefix_same_as_start(true);
+        DBIterator::new_cf_from_txn(
+            &self,
+            cf_handle,
+            &opts,
+            IteratorMode::From(prefix, Direction::Forward)
+        )
+    }
 }
