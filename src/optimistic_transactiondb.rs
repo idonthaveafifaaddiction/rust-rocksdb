@@ -141,17 +141,17 @@ unsafe impl Send for OptimisticTransactionDB {}
 unsafe impl Sync for OptimisticTransactionDB {}
 
 impl OptimisticTransactionDB {
-    pub fn begin_transaction(&self, old_txn: Option<Transaction>) -> Transaction {
+    // FIXME probably want to support transaction reuse
+    pub fn begin_transaction(&self) -> Transaction {
         let writeopts = WriteOptions::default();
         let txnopts = OptimisticTransactionOptions::default();
-        self.begin_transaction_opt(&writeopts, &txnopts, old_txn)
+        self.begin_transaction_opt(&writeopts, &txnopts)
     }
 
     pub fn begin_transaction_opt(
         &self,
         writeopts: &WriteOptions,
-        txnopts: &OptimisticTransactionOptions,
-        old_txn: Option<Transaction>
+        txnopts: &OptimisticTransactionOptions
     ) -> Transaction {
         // FIXME this is pretty gross but what else can we do?
         let opttxndb = self
@@ -167,17 +167,11 @@ impl OptimisticTransactionDB {
                 opttxndb,
                 writeopts.inner,
                 txnopts.inner,
-                match old_txn {
-                    Some(ref old_txn) => old_txn.inner,
-                    None => ptr::null_mut()
-                }
+                ptr::null_mut()
             )
         };
         assert!(!txn.is_null());  // FIXME
-        match old_txn {
-            Some(old_txn) => old_txn,
-            None => Transaction { inner: txn }
-        }
+        Transaction::new(txn)
     }
 
     // FIXME don't need this right?
