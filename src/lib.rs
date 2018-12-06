@@ -65,6 +65,9 @@ pub mod base_db;
 pub mod transaction;
 pub mod optimistic_transactiondb;
 
+// FIXME
+pub mod refactor;
+
 pub use compaction_filter::Decision as CompactionDecision;
 pub use db::{DBCompactionStyle, DBCompressionType, DBIterator, DBRawIterator, DBRecoveryMode,
              DBVector, ReadOptions, Direction, IteratorMode, Snapshot, WriteBatch,
