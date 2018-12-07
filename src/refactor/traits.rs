@@ -163,6 +163,18 @@ pub trait DatabaseIteration {
     }
 }
 
+impl<'a, T> DatabaseIteration for &'a T where T: DatabaseIteration {
+    fn iter_raw_opt(&self, readopts: &ReadOptions) -> RawDatabaseIterator {
+        (**self).iter_raw_opt(&readopts)
+    }
+}
+
+impl<'a, T> DatabaseIteration for &'a mut T where T: DatabaseIteration {
+    fn iter_raw_opt(&self, readopts: &ReadOptions) -> RawDatabaseIterator {
+        (**self).iter_raw_opt(&readopts)
+    }
+}
+
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 pub trait ColumnFamilyIteration {

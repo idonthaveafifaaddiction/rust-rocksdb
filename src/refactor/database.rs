@@ -51,6 +51,13 @@ use refactor::utils::{c_buf_to_opt_dbvec, pathref_to_cstring};
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
+pub(crate) enum InnerDbType {
+    DB(Rc<InnerDB>),
+    TxnDB(Rc<InnerTransactionDB>)
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+
 // FIXME probably not the best way to group these? A module would probably be fine...
 pub struct DBTool;
 impl DBTool {
@@ -223,8 +230,8 @@ impl Options {
 
 type DBDropFn = unsafe extern "C" fn(*mut ffi::rocksdb_t);
 
-struct InnerDB {
-    inner: *mut ffi::rocksdb_t,
+pub(crate) struct InnerDB {
+    pub(crate) inner: *mut ffi::rocksdb_t,
     drop_fn: DBDropFn
 }
 
@@ -238,10 +245,12 @@ impl Drop for InnerDB {
 
 pub struct DB {
     inner: Rc<InnerDB>,
-    cfs: BTreeMap<String, ColumnFamily>,
+    cfs: BTreeMap<String, ColumnFamily>,  // FIXME where is this used?
     path: PathBuf
 
 }
+
+unsafe impl Send for DB {} // FIXME is this okay?
 
 impl DB {
     pub fn path(&self) -> &Path {
@@ -535,7 +544,7 @@ impl ColumnFamilyIteration for DB {
 
 impl DatabaseSnapshotting for DB {
     fn snaphot(&self) -> Snapshot {
-        Snapshot::from_db(self.inner.inner)
+        Snapshot::from_innerdbtype(InnerDbType::DB(self.inner.clone()))
     }
 }
 
@@ -545,6 +554,8 @@ pub struct OptimisticTransactionDB {
     inner: *mut ffi::rocksdb_optimistictransactiondb_t,
     base_db: DB
 }
+
+unsafe impl Send for OptimisticTransactionDB {} // FIXME is this okay?
 
 impl OptimisticTransactionDB {
     pub fn path(&self) -> &Path {
@@ -678,7 +689,11 @@ impl OptimisticTransactionDB {
         if txn.is_null() {
             panic!("Failed to creaet RocksDB transaction");
         }
-        Transaction { inner: txn }
+
+        Transaction {
+            inner: txn,
+            db: InnerDbType::DB(self.base_db.inner.clone())
+        }
     }
 }
 
@@ -801,7 +816,7 @@ impl ColumnFamilyIteration for OptimisticTransactionDB {
 
 impl DatabaseSnapshotting for OptimisticTransactionDB {
     fn snaphot(&self) -> Snapshot {
-        Snapshot::from_db(self.base_db.inner.inner)
+        Snapshot::from_innerdbtype(InnerDbType::DB(self.base_db.inner.clone()))
     }
 }
 
@@ -868,18 +883,46 @@ impl TransactionDBOptions {
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
-pub struct TransactionDB {
-    inner: *mut ffi::rocksdb_transactiondb_t,  // FIXME probably want this to be an Rc<_>
-    path: PathBuf
+pub(crate) struct InnerTransactionDB {
+    pub(crate) inner: *mut ffi::rocksdb_transactiondb_t
 }
 
-impl Drop for TransactionDB {
+impl InnerTransactionDB {
+    fn open(
+        opts: &Options,
+        txndb_opts: &TransactionDBOptions,
+        cpath: &CString
+    ) -> Result<Self, Error> {
+        let inner = unsafe {
+            try_ffi!(ffi::rocksdb_transactiondb_open(
+                opts.inner,
+                txndb_opts.inner,
+                cpath.as_ptr() as *const _
+            ))
+        };
+
+        if inner.is_null() {
+            return Err(Error::new("Could not initialize RocksDB TransactionDB.".to_owned()));
+        }
+
+        Ok(Self { inner })
+    }
+}
+
+impl Drop for InnerTransactionDB {
     fn drop(&mut self) {
         unsafe {
             ffi::rocksdb_transactiondb_close(self.inner)
         }
     }
 }
+
+pub struct TransactionDB {
+    inner: Rc<InnerTransactionDB>,
+    path: PathBuf
+}
+
+unsafe impl Send for TransactionDB {} // FIXME is this okay?
 
 // FIXME implement
 impl TransactionDB {
@@ -907,20 +950,8 @@ impl TransactionDB {
             return Err(Error::new(format!("Failed to create RocksDB directory: `{:?}`.", err)));
         }
 
-        let db: *mut ffi::rocksdb_transactiondb_t = unsafe {
-            try_ffi!(ffi::rocksdb_transactiondb_open(
-                opts.inner,
-                txndb_opts.inner,
-                cpath.as_ptr() as *const _
-            ))
-        };
-
-        if db.is_null() {
-            return Err(Error::new("Could not initialize RocksDB TransactionDB.".to_owned()));
-        }
-
         Ok(Self {
-            inner: db,
+            inner: Rc::new(InnerTransactionDB::open(&opts, &txndb_opts, &cpath)?),
             path: path.to_path_buf()
         })
     }
@@ -932,7 +963,7 @@ impl TransactionDB {
     ) -> Transaction {
         let txn = unsafe {
             ffi::rocksdb_transaction_begin(
-                self.inner,
+                self.inner.inner,
                 writeopts.inner,
                 txnopts.inner,
                 ptr::null_mut()
@@ -941,7 +972,11 @@ impl TransactionDB {
         if txn.is_null() {
             panic!("Failed to creaet RocksDB transaction");
         }
-        Transaction { inner: txn }
+
+        Transaction {
+            inner: txn,
+            db: InnerDbType::TxnDB(self.inner.clone())
+        }
     }
 }
 
@@ -987,7 +1022,7 @@ impl OptDatabaseOperations for TransactionDB {
         let mut val_len = 0;
         let val = unsafe {
             try_ffi!(ffi::rocksdb_transactiondb_get(
-                self.inner,
+                self.inner.inner,
                 readopts.inner,
                 key.as_ptr() as *const c_char,
                 key.len(),
@@ -1006,7 +1041,7 @@ impl OptDatabaseOperations for TransactionDB {
         let mut val_len = 0;
         let val = unsafe {
             try_ffi!(ffi::rocksdb_transactiondb_get_cf(
-                self.inner,
+                self.inner.inner,
                 readopts.inner,
                 cf_handle.inner,
                 key.as_ptr() as *const c_char,
@@ -1020,7 +1055,7 @@ impl OptDatabaseOperations for TransactionDB {
     fn put_opt(&self, key: &[u8], value: &[u8], writeopts: &WriteOptions) -> Result<(), Error> {
         unsafe {
             try_ffi!(ffi::rocksdb_transactiondb_put(
-                self.inner,
+                self.inner.inner,
                 writeopts.inner,
                 key.as_ptr() as *const c_char,
                 key.len(),
@@ -1040,7 +1075,7 @@ impl OptDatabaseOperations for TransactionDB {
     ) -> Result<(), Error> {
         unsafe {
             try_ffi!(ffi::rocksdb_transactiondb_put_cf(
-                self.inner,
+                self.inner.inner,
                 writeopts.inner,
                 cf_handle.inner,
                 key.as_ptr() as *const c_char,
@@ -1060,7 +1095,7 @@ impl OptDatabaseOperations for TransactionDB {
     ) -> Result<(), Error> {
         unsafe {
             try_ffi!(ffi::rocksdb_transactiondb_merge(
-                self.inner,
+                self.inner.inner,
                 writeopts.inner,
                 key.as_ptr() as *const c_char,
                 key.len(),
@@ -1074,7 +1109,7 @@ impl OptDatabaseOperations for TransactionDB {
     fn delete_opt(&self, key: &[u8], writeopts: &WriteOptions) -> Result<(), Error> {
         unsafe {
             try_ffi!(ffi::rocksdb_transactiondb_delete(
-                self.inner,
+                self.inner.inner,
                 writeopts.inner,
                 key.as_ptr() as *const c_char,
                 key.len()
@@ -1091,7 +1126,7 @@ impl OptDatabaseOperations for TransactionDB {
     ) -> Result<(), Error> {
         unsafe {
             try_ffi!(ffi::rocksdb_transactiondb_delete_cf(
-                self.inner,
+                self.inner.inner,
                 writeopts.inner,
                 cf_handle.inner,
                 key.as_ptr() as *const c_char,
@@ -1107,7 +1142,7 @@ impl OptDatabaseOperations for TransactionDB {
 
 impl DatabaseIteration for TransactionDB {
     fn iter_raw_opt(&self, readopts: &ReadOptions) -> RawDatabaseIterator {
-        RawDatabaseIterator::from_txndb(self.inner, &readopts)
+        RawDatabaseIterator::from_txndb(self.inner.inner, &readopts)
     }
 }
 
@@ -1116,7 +1151,7 @@ impl DatabaseIteration for TransactionDB {
 
 impl DatabaseSnapshotting for TransactionDB {
     fn snaphot(&self) -> Snapshot {
-        Snapshot::from_txndb(self.inner)
+        Snapshot::from_innerdbtype(InnerDbType::TxnDB(self.inner.clone()))
     }
 }
 

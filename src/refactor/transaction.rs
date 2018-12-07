@@ -17,20 +17,20 @@
 use libc::{c_char, c_uchar};
 
 use ffi;
-use refactor::errors::Error;
 use refactor::common::{
     ColumnFamily,
     DatabaseVector,
     RawDatabaseIterator,
     ReadOptions,
-    // Snapshot,
-    WriteOptions
+    Snapshot
 };
+use refactor::database::InnerDbType;
+use refactor::errors::Error;
 use refactor::traits::{
     ColumnFamilyIteration,
     DatabaseIteration,
     DatabaseOperations,
-    // DatabaseSnapshotting
+    DatabaseSnapshotting
 };
 use refactor::utils::c_buf_to_opt_dbvec;
 
@@ -143,8 +143,10 @@ impl OptimisticTransactionOptions {
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
+// FIXME need to keep the underlying DB alive
 pub struct Transaction {
-    pub(crate) inner: *mut ffi::rocksdb_transaction_t
+    pub(crate) inner: *mut ffi::rocksdb_transaction_t,
+    pub(crate) db: InnerDbType
 }
 
 // FIXME is this okay to assume?
@@ -189,16 +191,6 @@ impl Transaction {
             }
         )
     }
-
-    // FIXME
-    // pub(crate) fn get_raw_snapshot(&self) -> *const ffi::rocksdb_snapshot_t {
-    //     unsafe { ffi::rocksdb_transaction_get_snapshot(self.inner) }
-    // }
-
-    // FIXME
-    // pub fn get_snapshot<'a>(&'a self, db: &'a BaseDb) -> Snapshot<'a> {
-    //     Snapshot::new_from_txn(db, &self)
-    // }
 
     pub fn get_for_update(&self, key: &[u8]) -> Result<Option<DatabaseVector>, Error> {
         let readopts = ReadOptions::default();
@@ -348,9 +340,8 @@ impl ColumnFamilyIteration for Transaction {
     }
 }
 
-// // FIXME implement
-// impl DatabaseSnapshotting for Transaction {
-//     fn snaphot(&self) -> Snapshot {
-//         unimplemented!()
-//     }
-// }
+impl DatabaseSnapshotting for Transaction {
+    fn snaphot(&self) -> Snapshot {
+        Snapshot::from_txn(&self)
+    }
+}

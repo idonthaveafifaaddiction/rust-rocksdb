@@ -21,8 +21,9 @@ use std::ops::Deref;
 use libc::{c_char, c_int, c_uchar, c_void};
 
 use ffi;
-use refactor::database::Options;
-use refactor::traits::{ColumnFamilyIteration, DatabaseIteration};
+use refactor::database::{Options, InnerDbType};
+// use refactor::traits::{ColumnFamilyIteration, DatabaseIteration};
+use refactor::transaction::Transaction;
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -69,7 +70,7 @@ impl ReadOptions {
         }
     }
 
-    fn set_snapshot(&mut self, snapshot: &Snapshot) {
+    pub fn set_snapshot(&mut self, snapshot: &Snapshot) {
         unsafe {
             ffi::rocksdb_readoptions_set_snapshot(self.inner, snapshot.inner);
         }
@@ -237,47 +238,56 @@ impl DatabaseVector {
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
-type SnapshotDropFn = Fn(*const ffi::rocksdb_snapshot_t);
-
 pub struct Snapshot {
     inner: *const ffi::rocksdb_snapshot_t,
-    drop_fn: Box<SnapshotDropFn>
+    db: InnerDbType
 }
 
 impl Drop for Snapshot {
     fn drop(&mut self) {
-        (self.drop_fn)(self.inner);
+        match self.db {
+            InnerDbType::DB(ref db) => unsafe {
+                ffi::rocksdb_release_snapshot(db.inner, self.inner)
+            },
+            InnerDbType::TxnDB(ref db) => unsafe {
+                ffi::rocksdb_transactiondb_release_snapshot(db.inner, self.inner)
+            }
+        }
     }
 }
 
-// FIXME Snapshot must keep underlying DB alive
-// FIXME implement
 impl Snapshot {
-    pub(crate) fn from_db(db: *mut ffi::rocksdb_t) -> Snapshot {
-        let snapshot = unsafe {
-            ffi::rocksdb_create_snapshot(db)
+    pub(crate) fn from_innerdbtype(db: InnerDbType) -> Snapshot {
+        let snapshot = match db {
+            InnerDbType::DB(ref db) => unsafe {
+                ffi::rocksdb_create_snapshot(db.inner)
+            },
+            InnerDbType::TxnDB(ref db) => unsafe {
+                ffi::rocksdb_transactiondb_create_snapshot(db.inner)
+            }
         };
         if snapshot.is_null() {
             panic!("Cannot create RocksDB snapshot");
         }
         Self {
             inner: snapshot,
-            drop_fn: Box::new(move |snap| unsafe { ffi::rocksdb_release_snapshot(db, snap) })
+            db: db
         }
     }
 
-    pub(crate) fn from_txndb(db: *mut ffi::rocksdb_transactiondb_t) -> Snapshot {
+    pub(crate) fn from_txn(txn: &Transaction) -> Snapshot {
         let snapshot = unsafe {
-            ffi::rocksdb_transactiondb_create_snapshot(db)
+            ffi::rocksdb_transaction_get_snapshot(txn.inner)
         };
         if snapshot.is_null() {
             panic!("Cannot create RocksDB snapshot");
         }
         Self {
             inner: snapshot,
-            drop_fn: Box::new(
-                move |snap| unsafe { ffi::rocksdb_transactiondb_release_snapshot(db, snap) }
-            )
+            db: match txn.db {
+                InnerDbType::DB(ref db) => InnerDbType::DB(db.clone()),
+                InnerDbType::TxnDB(ref db) => InnerDbType::TxnDB(db.clone())
+            }
         }
     }
 }
