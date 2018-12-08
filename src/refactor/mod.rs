@@ -17,6 +17,7 @@
 #[macro_use]
 pub(crate) mod utils;
 
+pub mod checkpoint;
 pub mod common;
 pub mod database;
 pub mod errors;

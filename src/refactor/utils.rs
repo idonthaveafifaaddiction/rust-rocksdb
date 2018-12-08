@@ -1,3 +1,6 @@
+// Copyright 2018. Starry, Inc. All Rights Reserved.
+//
+// FIXME based off prior work...
 // Copyright 2016 Alex Regueiro
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
@@ -12,6 +15,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
+// Software written by Steven Sloboda <ssloboda@starry.com>.
 
 use std::ffi::{CStr, CString};
 use std::path::Path;

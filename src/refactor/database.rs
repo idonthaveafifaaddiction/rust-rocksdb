@@ -1,6 +1,7 @@
 // Copyright 2018. Starry, Inc. All Rights Reserved.
 //
 // FIXME based off prior work...
+// Copyright 2014 Tyler Neely
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -28,6 +29,7 @@ use libc::{c_char, c_int, c_uchar};
 
 use ffi;
 use refactor::errors::Error;
+use refactor::checkpoint::Checkpoint;
 use refactor::common::{
     ColumnFamily,
     ColumnFamilyDescriptor,
@@ -40,11 +42,14 @@ use refactor::common::{
 use refactor::traits::{
     ColumnFamilyIteration,
     ColumnFamilyMergeOperations,
+    DatabaseCheckpoints,
     DatabaseIteration,
-    DatabaseOperations,
+    DatabaseReadNoOptOperations,
+    DatabaseReadOptOperations,
     DatabaseTransactions,
     DatabaseSnapshotting,
-    OptDatabaseOperations
+    DatabaseWriteNoOptOperations,
+    DatabaseWriteOptOperations
 };
 use refactor::transaction::{OptimisticTransactionOptions, Transaction, TransactionOptions};
 use refactor::utils::{c_buf_to_opt_dbvec, pathref_to_cstring};
@@ -346,7 +351,7 @@ impl DB {
     }
 }
 
-impl DatabaseOperations for DB {
+impl DatabaseReadNoOptOperations for DB {
     fn get(&self, key: &[u8]) -> Result<Option<DatabaseVector>, Error> {
         let readopts = ReadOptions::default();
         self.get_opt(key, &readopts)
@@ -356,7 +361,9 @@ impl DatabaseOperations for DB {
         let readopts = ReadOptions::default();
         self.get_cf_opt(cf_handle, key, &readopts)
     }
+}
 
+impl DatabaseWriteNoOptOperations for DB {
     fn put(&self, key: &[u8], value: &[u8]) -> Result<(), Error> {
         let writeopts = WriteOptions::default();
         self.put_opt(key, value, &writeopts)
@@ -383,7 +390,7 @@ impl DatabaseOperations for DB {
     }
 }
 
-impl OptDatabaseOperations for DB {
+impl DatabaseReadOptOperations for DB {
     fn get_opt(&self, key: &[u8], readopts: &ReadOptions) -> Result<Option<DatabaseVector>, Error> {
         let mut val_len = 0;
         let val = unsafe {
@@ -417,7 +424,9 @@ impl OptDatabaseOperations for DB {
         } as *mut u8;
         Ok(c_buf_to_opt_dbvec(val, val_len))
     }
+}
 
+impl DatabaseWriteOptOperations for DB {
     fn put_opt(&self, key: &[u8], value: &[u8], writeopts: &WriteOptions) -> Result<(), Error> {
         unsafe {
             try_ffi!(ffi::rocksdb_put(
@@ -528,7 +537,7 @@ impl ColumnFamilyMergeOperations for DB {
 
 impl DatabaseIteration for DB {
     fn iter_raw_opt(&self, readopts: &ReadOptions) -> RawDatabaseIterator {
-        RawDatabaseIterator::from_db(self.inner.inner, &readopts)
+        RawDatabaseIterator::from_innerdbtype(InnerDbType::DB(self.inner.clone()), &readopts)
     }
 }
 
@@ -538,13 +547,19 @@ impl ColumnFamilyIteration for DB {
         cf_handle: ColumnFamily,
         readopts: &ReadOptions
     ) -> RawDatabaseIterator {
-        RawDatabaseIterator::from_db_cf(self.inner.inner, cf_handle, &readopts)
+        RawDatabaseIterator::from_db_cf(self.inner.clone(), cf_handle, &readopts)
     }
 }
 
 impl DatabaseSnapshotting for DB {
-    fn snaphot(&self) -> Snapshot {
+    fn snapshot(&self) -> Snapshot {
         Snapshot::from_innerdbtype(InnerDbType::DB(self.inner.clone()))
+    }
+}
+
+impl DatabaseCheckpoints for DB {
+    fn checkpoint_object(&self) -> Result<Checkpoint, Error> {
+        Checkpoint::from_innerdbtype(InnerDbType::DB(self.inner.clone()))
     }
 }
 
@@ -705,7 +720,7 @@ impl Drop for OptimisticTransactionDB {
     }
 }
 
-impl DatabaseOperations for OptimisticTransactionDB {
+impl DatabaseReadNoOptOperations for OptimisticTransactionDB {
     fn get(&self, key: &[u8]) -> Result<Option<DatabaseVector>, Error> {
         self.base_db.get(key)
     }
@@ -713,7 +728,9 @@ impl DatabaseOperations for OptimisticTransactionDB {
     fn get_cf(&self, cf_handle: ColumnFamily, key: &[u8]) -> Result<Option<DatabaseVector>, Error> {
         self.base_db.get_cf(cf_handle, key)
     }
+}
 
+impl DatabaseWriteNoOptOperations for OptimisticTransactionDB {
     fn put(&self, key: &[u8], value: &[u8]) -> Result<(), Error> {
         self.base_db.put(key, value)
     }
@@ -735,7 +752,7 @@ impl DatabaseOperations for OptimisticTransactionDB {
     }
 }
 
-impl OptDatabaseOperations for OptimisticTransactionDB {
+impl DatabaseReadOptOperations for OptimisticTransactionDB {
     fn get_opt(&self, key: &[u8], readopts: &ReadOptions) -> Result<Option<DatabaseVector>, Error> {
         self.base_db.get_opt(key, &readopts)
     }
@@ -748,7 +765,9 @@ impl OptDatabaseOperations for OptimisticTransactionDB {
     ) -> Result<Option<DatabaseVector>, Error> {
         self.base_db.get_cf_opt(cf_handle, key, &readopts)
     }
+}
 
+impl DatabaseWriteOptOperations for OptimisticTransactionDB {
     fn put_opt(&self, key: &[u8], value: &[u8], writeopts: &WriteOptions) -> Result<(), Error> {
         self.base_db.put_opt(key, value, &writeopts)
     }
@@ -815,7 +834,7 @@ impl ColumnFamilyIteration for OptimisticTransactionDB {
 }
 
 impl DatabaseSnapshotting for OptimisticTransactionDB {
-    fn snaphot(&self) -> Snapshot {
+    fn snapshot(&self) -> Snapshot {
         Snapshot::from_innerdbtype(InnerDbType::DB(self.base_db.inner.clone()))
     }
 }
@@ -824,6 +843,12 @@ impl DatabaseTransactions for OptimisticTransactionDB {
     fn begin_transaction_opt(&self, writeopts: &WriteOptions) -> Transaction {
         let opttxnopts = OptimisticTransactionOptions::default();
         self.begin_transaction_opt_full(&writeopts, &opttxnopts)
+    }
+}
+
+impl DatabaseCheckpoints for OptimisticTransactionDB {
+    fn checkpoint_object(&self) -> Result<Checkpoint, Error> {
+        Checkpoint::from_innerdbtype(InnerDbType::DB(self.base_db.inner.clone()))
     }
 }
 
@@ -980,7 +1005,7 @@ impl TransactionDB {
     }
 }
 
-impl DatabaseOperations for TransactionDB {
+impl DatabaseReadNoOptOperations for TransactionDB {
     fn get(&self, key: &[u8]) -> Result<Option<DatabaseVector>, Error> {
         let readopts = ReadOptions::default();
         self.get_opt(key, &readopts)
@@ -990,7 +1015,9 @@ impl DatabaseOperations for TransactionDB {
         let readopts = ReadOptions::default();
         self.get_cf_opt(cf_handle, key, &readopts)
     }
+}
 
+impl DatabaseWriteNoOptOperations for TransactionDB {
     fn put(&self, key: &[u8], value: &[u8]) -> Result<(), Error> {
         let writeopts = WriteOptions::default();
         self.put_opt(key, value, &writeopts)
@@ -1017,7 +1044,7 @@ impl DatabaseOperations for TransactionDB {
     }
 }
 
-impl OptDatabaseOperations for TransactionDB {
+impl DatabaseReadOptOperations for TransactionDB {
     fn get_opt(&self, key: &[u8], readopts: &ReadOptions) -> Result<Option<DatabaseVector>, Error> {
         let mut val_len = 0;
         let val = unsafe {
@@ -1051,7 +1078,9 @@ impl OptDatabaseOperations for TransactionDB {
         } as *mut u8;
         Ok(c_buf_to_opt_dbvec(val, val_len))
     }
+}
 
+impl DatabaseWriteOptOperations for TransactionDB {
     fn put_opt(&self, key: &[u8], value: &[u8], writeopts: &WriteOptions) -> Result<(), Error> {
         unsafe {
             try_ffi!(ffi::rocksdb_transactiondb_put(
@@ -1142,7 +1171,7 @@ impl OptDatabaseOperations for TransactionDB {
 
 impl DatabaseIteration for TransactionDB {
     fn iter_raw_opt(&self, readopts: &ReadOptions) -> RawDatabaseIterator {
-        RawDatabaseIterator::from_txndb(self.inner.inner, &readopts)
+        RawDatabaseIterator::from_innerdbtype(InnerDbType::TxnDB(self.inner.clone()), &readopts)
     }
 }
 
@@ -1150,7 +1179,7 @@ impl DatabaseIteration for TransactionDB {
 // impl ColumnFamilyIteration for TransactionDB {}
 
 impl DatabaseSnapshotting for TransactionDB {
-    fn snaphot(&self) -> Snapshot {
+    fn snapshot(&self) -> Snapshot {
         Snapshot::from_innerdbtype(InnerDbType::TxnDB(self.inner.clone()))
     }
 }
@@ -1159,5 +1188,11 @@ impl DatabaseTransactions for TransactionDB {
     fn begin_transaction_opt(&self, writeopts: &WriteOptions) -> Transaction {
         let txnopts = TransactionOptions::default();
         self.begin_transaction_opt_full(&writeopts, &txnopts)
+    }
+}
+
+impl DatabaseCheckpoints for TransactionDB {
+    fn checkpoint_object(&self) -> Result<Checkpoint, Error> {
+        Checkpoint::from_innerdbtype(InnerDbType::TxnDB(self.inner.clone()))
     }
 }

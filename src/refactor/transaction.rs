@@ -29,8 +29,10 @@ use refactor::errors::Error;
 use refactor::traits::{
     ColumnFamilyIteration,
     DatabaseIteration,
-    DatabaseOperations,
-    DatabaseSnapshotting
+    DatabaseReadNoOptOperations,
+    DatabaseReadOptOperations,
+    DatabaseSnapshotting,
+    DatabaseWriteNoOptOperations
 };
 use refactor::utils::c_buf_to_opt_dbvec;
 
@@ -143,7 +145,6 @@ impl OptimisticTransactionOptions {
 
 ////////////////////////////////////////////////////////////////////////////////////////////////////
 
-// FIXME need to keep the underlying DB alive
 pub struct Transaction {
     pub(crate) inner: *mut ffi::rocksdb_transaction_t,
     pub(crate) db: InnerDbType
@@ -217,10 +218,8 @@ impl Transaction {
     }
 }
 
-impl DatabaseOperations for Transaction {
-    // FIXME we should expose get_opt but not all opt fns are supported...
-    fn get(&self, key: &[u8]) -> Result<Option<DatabaseVector>, Error> {
-        let readopts = ReadOptions::default();
+impl DatabaseReadOptOperations for Transaction {
+    fn get_opt(&self, key: &[u8], readopts: &ReadOptions) -> Result<Option<DatabaseVector>, Error> {
         let mut val_len = 0;
         let val = unsafe {
             try_ffi!(ffi::rocksdb_transaction_get(
@@ -234,9 +233,12 @@ impl DatabaseOperations for Transaction {
         Ok(c_buf_to_opt_dbvec(val, val_len))
     }
 
-    // FIXME we should expose get_cf_opt but not all opt fns are supported...
-    fn get_cf(&self, cf_handle: ColumnFamily, key: &[u8]) -> Result<Option<DatabaseVector>, Error> {
-        let readopts = ReadOptions::default();
+    fn get_cf_opt(
+        &self,
+        cf_handle: ColumnFamily,
+        key: &[u8],
+        readopts: &ReadOptions
+    ) -> Result<Option<DatabaseVector>, Error> {
         let mut val_len = 0;
         let val = unsafe {
             try_ffi!(ffi::rocksdb_transaction_get_cf(
@@ -250,7 +252,25 @@ impl DatabaseOperations for Transaction {
         } as *mut u8;
         Ok(c_buf_to_opt_dbvec(val, val_len))
     }
+}
 
+impl DatabaseReadNoOptOperations for Transaction {
+    fn get(&self, key: &[u8]) -> Result<Option<DatabaseVector>, Error> {
+        let readopts = ReadOptions::default();
+        self.get_opt(&key, &readopts)
+    }
+
+    fn get_cf(
+        &self,
+        cf_handle: ColumnFamily,
+        key: &[u8]
+    ) -> Result<Option<DatabaseVector>, Error> {
+        let readopts = ReadOptions::default();
+        self.get_cf_opt(cf_handle, &key, &readopts)
+    }
+}
+
+impl DatabaseWriteNoOptOperations for Transaction {
     fn put(&self, key: &[u8], value: &[u8]) -> Result<(), Error> {
         Ok(
             unsafe {
@@ -323,7 +343,13 @@ impl DatabaseIteration for Transaction {
         let iter = unsafe {
             ffi::rocksdb_transaction_create_iterator(self.inner, readopts.inner)
         };
-        RawDatabaseIterator::from_raw(iter)
+        RawDatabaseIterator::from_raw(
+            iter,
+            match self.db {
+                InnerDbType::DB(ref db) => InnerDbType::DB(db.clone()),
+                InnerDbType::TxnDB(ref db) => InnerDbType::TxnDB(db.clone())
+            }
+        )
     }
 }
 
@@ -334,14 +360,24 @@ impl ColumnFamilyIteration for Transaction {
         readopts: &ReadOptions
     ) -> RawDatabaseIterator {
         let iter = unsafe {
-            ffi::rocksdb_transaction_create_iterator_cf(self.inner, readopts.inner, cf_handle.inner)
+            ffi::rocksdb_transaction_create_iterator_cf(
+                self.inner,
+                readopts.inner,
+                cf_handle.inner
+            )
         };
-        RawDatabaseIterator::from_raw(iter)
+        RawDatabaseIterator::from_raw(
+            iter,
+            match self.db {
+                InnerDbType::DB(ref db) => InnerDbType::DB(db.clone()),
+                InnerDbType::TxnDB(ref db) => InnerDbType::TxnDB(db.clone())
+            }
+        )
     }
 }
 
 impl DatabaseSnapshotting for Transaction {
-    fn snaphot(&self) -> Snapshot {
+    fn snapshot(&self) -> Snapshot {
         Snapshot::from_txn(&self)
     }
 }

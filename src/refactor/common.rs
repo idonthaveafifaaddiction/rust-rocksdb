@@ -1,6 +1,7 @@
 // Copyright 2018. Starry, Inc. All Rights Reserved.
 //
 // FIXME based off prior work...
+// Copyright 2014 Tyler Neely
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,12 +18,18 @@
 // Software written by Steven Sloboda <ssloboda@starry.com>.
 
 use std::ops::Deref;
+use std::rc::Rc;
 
 use libc::{c_char, c_int, c_uchar, c_void};
 
 use ffi;
-use refactor::database::{Options, InnerDbType};
-// use refactor::traits::{ColumnFamilyIteration, DatabaseIteration};
+use refactor::database::{InnerDB, InnerDbType, Options};
+// use refactor::errors::Error;
+use refactor::traits::{
+    ColumnFamilyIteration,
+    DatabaseIteration,
+    // DatabaseReadNoOptOperations
+};
 use refactor::transaction::Transaction;
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -59,10 +66,7 @@ impl ReadOptions {
         Self::default()
     }
 
-    // FIXME what's all this about?
-    // TODO add snapshot setting here
-    // TODO add snapshot wrapper structs with proper destructors;
-    // that struct needs an "iterator" impl too.
+    // FIXME what's this about?
     #[allow(dead_code)]
     fn fill_cache(&mut self, enable: bool) {
         unsafe {
@@ -293,119 +297,168 @@ impl Snapshot {
 }
 
 // FIXME implement
-// impl DatabaseOperations for Snapshot {
-//     fn get(&self, key: &[u8]) -> Result<Option<DBVector>, Error> {
+// FIXME FIXME FIXME Snapshot needs access to underlying DB operations
+// impl DatabaseReadNoOptOperations for Snapshot {
+//     fn get(&self, key: &[u8]) -> Result<Option<DatabaseVector>, Error> {
 //         let mut readopts = ReadOptions::default();
 //         readopts.set_snapshot(self);
-//         self.db.get_opt(key, &readopts)
+//         match self.db {
+//             InnerDbType::DB(ref db) => db.get_opt(&key, &readopts),
+//             InnerDbType::TxnDB(ref db) => db.get_opt(&key, &readopts)
+//         }
 //     }
-
-//     fn get_cf(&self, cf: ColumnFamily, key: &[u8]) -> Result<Option<DBVector>, Error> {
+//
+//     fn get_cf(&self, cf_handle: ColumnFamily, key: &[u8]) -> Result<Option<DatabaseVector>, Error> {
 //         let mut readopts = ReadOptions::default();
 //         readopts.set_snapshot(self);
-//         self.db.get_cf_opt(cf, key, &readopts)
-//     }
-
-//     // FIXME FIXME write operations not supported on snapshot
-//     fn put(&self, key: &[u8], value: &[u8]) -> Result<(), Error> { panic!() }
-//     fn put_cf(&self, cf_handle: ColumnFamily, key: &[u8], value: &[u8]) -> Result<(), Error> { panic!() }
-//     fn merge(&self, key: &[u8], value: &[u8]) -> Result<(), Error> { panic!() }
-//     fn delete(&self, key: &[u8]) -> Result<(), Error> { panic!() }
-//     fn delete_cf(&self, cf_handle: ColumnFamily, key: &[u8]) -> Result<(), Error> { panic!() }
-// }
-
-// FIXME implement
-// impl DatabaseIteration for Snapshot {
-//     fn iterator(&self, mode: IteratorMode) -> DBIterator {
-//         let mut readopts = ReadOptions::default();
-//         readopts.set_snapshot(self);
-//         DBIterator::new(self.db, &readopts, mode)
-//     }
-
-//     fn raw_iterator(&self) -> DBRawIterator {
-//         let mut readopts = ReadOptions::default();
-//         readopts.set_snapshot(self);
-//         DBRawIterator::new(self.db, &readopts)
+//         match self.db {
+//             InnerDbType::DB(ref db) => db.get_opt_cf(cf_handle, &key, &readopts),
+//             InnerDbType::TxnDB(ref db) => db.get_opt_cf(cf_handle, &key, &readopts)
+//         }
 //     }
 // }
 
-// FIXME implement
-// impl ColumnFamilyIteration for Snapshot {
-//     fn iterator_cf(
-//         &self,
-//         cf_handle: ColumnFamily,
-//         mode: IteratorMode,
-//     ) -> Result<DBIterator, Error> {
-//         let mut readopts = ReadOptions::default();
-//         readopts.set_snapshot(self);
-//         DBIterator::new_cf(self.db, cf_handle, &readopts, mode)
-//     }
+impl DatabaseIteration for Snapshot {
+    fn iter_raw(&self) -> RawDatabaseIterator {
+        let mut readopts = ReadOptions::default();
+        readopts.set_snapshot(self);
+        self.iter_raw_opt(&readopts)
+    }
 
-//     fn raw_iterator_cf(&self, cf_handle: ColumnFamily) -> Result<DBRawIterator, Error> {
-//         let mut readopts = ReadOptions::default();
-//         readopts.set_snapshot(self);
-//         DBRawIterator::new_cf(self.db, cf_handle, &readopts)
-//     }
-// }
+    // FIXME FIXME FIXME readopts must have snapshot set to self
+    fn iter_raw_opt(&self, readopts: &ReadOptions) -> RawDatabaseIterator {
+        match self.db {
+            InnerDbType::DB(ref db) => RawDatabaseIterator::from_innerdbtype(
+                InnerDbType::DB(db.clone()),
+                &readopts
+            ),
+            InnerDbType::TxnDB(ref db) => RawDatabaseIterator::from_innerdbtype(
+                InnerDbType::TxnDB(db.clone()),
+                &readopts
+            )
+        }
+    }
+
+    /// Opens an interator with `set_total_order_seek` enabled.
+    /// This must be used to iterate across prefixes when `set_memtable_factory` has been called
+    /// with a Hash-based implementation.
+    fn iter_full(&self, mode: DatabaseIteratorMode) -> DatabaseIterator {
+        let mut readopts = ReadOptions::default();
+        readopts.set_total_order_seek(true);
+        readopts.set_snapshot(self);
+        DatabaseIterator::from_raw(self.iter_raw_opt(&readopts), mode)
+    }
+
+    fn iter_prefix<'p>(&self, prefix: &'p [u8]) -> DatabaseIterator {
+        let mut readopts = ReadOptions::default();
+        readopts.set_prefix_same_as_start(true);
+        readopts.set_snapshot(self);
+        DatabaseIterator::from_raw(
+            self.iter_raw_opt(&readopts),
+            DatabaseIteratorMode::From(prefix, DatabaseIteratorDirection::Forward)
+        )
+    }
+}
+
+impl ColumnFamilyIteration for Snapshot {
+    fn iter_cf_raw(&self, cf_handle: ColumnFamily) -> RawDatabaseIterator {
+        let mut readopts = ReadOptions::default();
+        readopts.set_snapshot(self);
+        self.iter_cf_raw_opt(cf_handle, &readopts)
+    }
+
+    // FIXME FIXME FIXME readopts must have snapshot set to self
+    fn iter_cf_raw_opt(
+        &self,
+        cf_handle: ColumnFamily,
+        readopts: &ReadOptions
+    ) -> RawDatabaseIterator {
+        match self.db {
+            InnerDbType::DB(ref db) => {
+                RawDatabaseIterator::from_db_cf(db.clone(), cf_handle, &readopts)
+            },
+            // FIXME FIXME FIXME the abstraction we built breaks down here
+            InnerDbType::TxnDB(_) => unreachable!()
+        }
+    }
+
+    fn iter_cf(&self, cf_handle: ColumnFamily, mode: DatabaseIteratorMode) -> DatabaseIterator {
+        DatabaseIterator::from_raw(self.iter_cf_raw(cf_handle), mode)
+    }
+
+    fn iter_cf_full(
+        &self,
+        cf_handle: ColumnFamily,
+        mode: DatabaseIteratorMode
+    ) -> DatabaseIterator {
+        let mut readopts = ReadOptions::default();
+        readopts.set_total_order_seek(true);
+        readopts.set_snapshot(self);
+        DatabaseIterator::from_raw(self.iter_cf_raw_opt(cf_handle, &readopts), mode)
+    }
+
+    fn iter_cf_prefix<'p>(&self, cf_handle: ColumnFamily, prefix: &'p [u8]) -> DatabaseIterator {
+        let mut readopts = ReadOptions::default();
+        readopts.set_prefix_same_as_start(true);
+        readopts.set_snapshot(self);
+        DatabaseIterator::from_raw(
+            self.iter_cf_raw_opt(cf_handle, &readopts),
+            DatabaseIteratorMode::From(prefix, DatabaseIteratorDirection::Forward)
+        )
+    }
+}
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
-// FIXME open iterators need to keep the underlying db alive...
-// FIXME do iterators need to be released?
 pub struct RawDatabaseIterator {
-    inner: *mut ffi::rocksdb_iterator_t
+    inner: *mut ffi::rocksdb_iterator_t,
+    // Keep the DB alive while we're alive.
+    _db: InnerDbType
 }
 
 impl RawDatabaseIterator {
-    pub(crate) fn from_raw(inner: *mut ffi::rocksdb_iterator_t) -> Self {
+    pub(crate) fn from_raw(inner: *mut ffi::rocksdb_iterator_t, db: InnerDbType) -> Self {
         if inner.is_null() {
             panic!("Unable to create RocksDB iterator")
         }
         Self {
-            inner
+            inner,
+            _db: db
         }
     }
 
-    pub(crate) fn from_db(db: *mut ffi::rocksdb_t, readopts: &ReadOptions) -> Self {
-        let inner = unsafe {
-            ffi::rocksdb_create_iterator(db, readopts.inner)
+    pub(crate) fn from_innerdbtype(db: InnerDbType, readopts: &ReadOptions) -> Self {
+        let inner = match db {
+            InnerDbType::DB(ref db) => unsafe {
+                ffi::rocksdb_create_iterator(db.inner, readopts.inner)
+            },
+            InnerDbType::TxnDB(ref db) => unsafe {
+                ffi::rocksdb_transactiondb_create_iterator(db.inner, readopts.inner)
+            }
         };
         if inner.is_null() {
             panic!("Unable to create RocksDB iterator")
         }
         Self {
-            inner
-        }
-    }
-
-    pub(crate) fn from_txndb(
-        txndb: *mut ffi::rocksdb_transactiondb_t,
-        readopts: &ReadOptions
-    ) -> Self {
-        let inner = unsafe {
-            ffi::rocksdb_transactiondb_create_iterator(txndb, readopts.inner)
-        };
-        if inner.is_null() {
-            panic!("Unable to create RocksDB TransactionDB iterator")
-        }
-        Self {
-            inner
+            inner,
+            _db: db
         }
     }
 
     pub(crate) fn from_db_cf(
-        db: *mut ffi::rocksdb_t,
+        db: Rc<InnerDB>,
         cf_handle: ColumnFamily,
         readopts: &ReadOptions,
     ) -> Self {
         let inner = unsafe {
-            ffi::rocksdb_create_iterator_cf(db, readopts.inner, cf_handle.inner)
+            ffi::rocksdb_create_iterator_cf(db.inner, readopts.inner, cf_handle.inner)
         };
         if inner.is_null() {
             panic!("Unable to create RocksDB cf iterator")
         }
         Self {
-            inner
+            inner,
+            _db: InnerDbType::DB(db)
         }
     }
 
