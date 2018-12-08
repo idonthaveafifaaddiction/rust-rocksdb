@@ -84,7 +84,7 @@ pub struct WriteBatch {
 }
 
 pub struct ReadOptions {
-    pub inner: *mut ffi::rocksdb_readoptions_t,  // FIXME no pub
+    inner: *mut ffi::rocksdb_readoptions_t,
 }
 
 /// A consistent view of the database at the point of creation.
