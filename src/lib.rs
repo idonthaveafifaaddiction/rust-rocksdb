@@ -60,10 +60,7 @@ pub mod compaction_filter;
 mod db;
 mod db_options;
 mod slice_transform;
-// pub mod transactiondb;
-pub mod transaction;
-pub mod optimistic_transactiondb;
-mod util;
+pub mod transactiondb;
 
 // FIXME
 pub mod refactor;
