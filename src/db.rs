@@ -80,11 +80,11 @@ pub enum DBRecoveryMode {
 /// }
 /// ```
 pub struct WriteBatch {
-    pub(crate) inner: *mut ffi::rocksdb_writebatch_t,  // FIXME no pub
+    inner: *mut ffi::rocksdb_writebatch_t,
 }
 
 pub struct ReadOptions {
-    pub(crate) inner: *mut ffi::rocksdb_readoptions_t,  // FIXME no pub
+    pub inner: *mut ffi::rocksdb_readoptions_t,  // FIXME no pub
 }
 
 /// A consistent view of the database at the point of creation.
@@ -1256,13 +1256,6 @@ impl ReadOptions {
             ffi::rocksdb_readoptions_set_snapshot(self.inner, snapshot.inner);
         }
     }
-
-    pub(crate) fn set_raw_snapshot(&mut self, snapshot: *const ffi::rocksdb_snapshot_t) { // FIXME
-        unsafe {
-            ffi::rocksdb_readoptions_set_snapshot(self.inner, snapshot);
-        }
-    }
-
 
     pub fn set_iterate_upper_bound(&mut self, key: &[u8]) {
         unsafe {
