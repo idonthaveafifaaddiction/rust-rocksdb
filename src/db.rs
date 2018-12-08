@@ -17,7 +17,6 @@
 use {DB, Error, Options, WriteOptions, ColumnFamily, ColumnFamilyDescriptor};
 use base_db::{BaseDb, BaseDbImpl};
 use ffi;
-use transaction::Transaction;
 
 use libc::{self, c_char, c_int, c_uchar, c_void, size_t};
 use std::any::Any;
@@ -146,7 +145,7 @@ pub struct Snapshot<'a> {
 /// }
 /// ```
 pub struct DBRawIterator {
-    pub(crate) inner: *mut ffi::rocksdb_iterator_t,  // FIXME no pub
+    inner: *mut ffi::rocksdb_iterator_t,
 }
 
 
@@ -450,20 +449,6 @@ impl DBIterator {
         rv
     }
 
-    pub(crate) fn new_from_txn(
-        txn: &Transaction,
-        readopts: &ReadOptions,
-        mode: IteratorMode
-    ) -> DBIterator {
-        let mut rv = DBIterator {
-            raw: txn.raw_iterator_opt(&readopts),
-            direction: Direction::Forward, // blown away by set_mode()
-            just_seeked: false,
-        };
-        rv.set_mode(mode);
-        rv
-    }
-
     pub(crate) fn new_cf(
         db: &BaseDb,
         cf_handle: ColumnFamily,
@@ -472,21 +457,6 @@ impl DBIterator {
     ) -> Result<DBIterator, Error> {
         let mut rv = DBIterator {
             raw: try!(DBRawIterator::new_cf(db, cf_handle, readopts)),
-            direction: Direction::Forward, // blown away by set_mode()
-            just_seeked: false,
-        };
-        rv.set_mode(mode);
-        Ok(rv)
-    }
-
-    pub(crate) fn new_cf_from_txn(
-        txn: &Transaction,
-        cf_handle: ColumnFamily,
-        readopts: &ReadOptions,
-        mode: IteratorMode,
-    ) -> Result<DBIterator, Error> {
-        let mut rv = DBIterator {
-            raw: txn.raw_iterator_cf_opt(cf_handle, readopts),
             direction: Direction::Forward, // blown away by set_mode()
             just_seeked: false,
         };
@@ -562,14 +532,6 @@ impl<'a> Snapshot<'a> {
         Snapshot {
             db: db,
             inner: snapshot,
-        }
-    }
-
-    // FIXME make sure that the Txn provided references the BaseDb provided
-    pub(crate) fn new_from_txn(db: &'a BaseDb, txn: &'a Transaction) -> Snapshot<'a> {
-        Snapshot {
-            db: db,
-            inner: txn.get_raw_snapshot()
         }
     }
 
