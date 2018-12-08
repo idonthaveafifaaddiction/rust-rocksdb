@@ -28,7 +28,7 @@ const LOG_SIZE_FOR_FLUSH: u64 = 0_u64;
 /// Database's checkpoint object.
 /// Used to create checkpoints of the specified DB from time to time.
 pub struct Checkpoint {
-    pub(crate) inner: *mut ffi::rocksdb_checkpoint_t,  // FIXME no pub
+    inner: *mut ffi::rocksdb_checkpoint_t,
 }
 
 impl Checkpoint {
