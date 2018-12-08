@@ -61,9 +61,9 @@ mod db;
 mod db_options;
 mod slice_transform;
 // pub mod transactiondb;
-pub mod base_db;
 pub mod transaction;
 pub mod optimistic_transactiondb;
+mod util;
 
 // FIXME
 pub mod refactor;
@@ -72,19 +72,22 @@ pub use compaction_filter::Decision as CompactionDecision;
 pub use db::{DBCompactionStyle, DBCompressionType, DBIterator, DBRawIterator, DBRecoveryMode,
              DBVector, ReadOptions, Direction, IteratorMode, Snapshot, WriteBatch,
              new_bloom_filter};
-use base_db::BaseDb;
 
 pub use slice_transform::SliceTransform;
 
 pub use merge_operator::MergeOperands;
+use std::collections::BTreeMap;
 use std::error;
 use std::fmt;
+use std::path::PathBuf;
 
 /// A RocksDB database.
 ///
 /// See crate level documentation for a simple usage example.
 pub struct DB {
-    inner: BaseDb,
+    inner: *mut ffi::rocksdb_t,
+    cfs: BTreeMap<String, ColumnFamily>,
+    path: PathBuf,
 }
 
 /// A descriptor for a RocksDB column family.
