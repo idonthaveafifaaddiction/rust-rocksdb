@@ -14,16 +14,22 @@
 //
 // Software written by Steven Sloboda <ssloboda@starry.com>.
 
-use libc::{c_char, c_int};
-use std::any::Any;
+// FIXME this module is copypasta for now until the existing DB interface is refactored a bit to
+// allow shared code between DB and OptimisticTransactionDB.
+
+use libc::{c_char, c_int, size_t};
+use std::collections::BTreeMap;
 use std::ffi::CString;
 use std::fmt;
+use std::fs;
 use std::path::Path;
+use std::path::PathBuf;
 use std::ptr;
+use std::slice;
 use std::str;
+use std::ffi::CStr;
 
 use {
-    BaseDb,
     Error,
     Options,
     WriteOptions,
@@ -35,99 +41,26 @@ use {
     DBIterator,
     DBRawIterator,
     IteratorMode,
-    Snapshot
+    Snapshot,
+    Direction
 };
 use ffi;
 use transaction::{Transaction, OptimisticTransactionOptions};
-use base_db::BaseDbImpl;
-
-pub struct OptTxnDbBaseDbImpl {
-    inner: *mut ffi::rocksdb_optimistictransactiondb_t,
-    initialized: bool
-}
-
-impl Drop for OptTxnDbBaseDbImpl {
-    fn drop(&mut self) {
-        if self.initialized {
-            unsafe { ffi::rocksdb_optimistictransactiondb_close(self.inner); }
-        }
-    }
-}
-
-impl Default for OptTxnDbBaseDbImpl {
-    fn default() -> Self {
-        Self {
-            inner: ptr::null_mut(),
-            initialized: false
-        }
-    }
-}
-
-impl BaseDbImpl for OptTxnDbBaseDbImpl {
-    fn open_raw(&mut self, opts: &Options, cpath: &CString) -> Result<(), Error> {
-        if self.initialized {
-            return Err(Error::new("Database is already open".into()));
-        }
-        let db = unsafe {
-            ffi_try!(ffi::rocksdb_optimistictransactiondb_open(
-                opts.inner,
-                cpath.as_ptr() as *const _,
-            ))
-        };
-        if db.is_null() {
-            return Err(Error::new("Failed to open database".into()));
-        }
-        self.inner = db;
-        self.initialized = true;
-        Ok(())
-    }
-
-    fn open_cf_raw(
-        &mut self,
-        opts: &Options,
-        cpath: &CString,
-        num_cfs: usize,
-        cfnames: &mut Vec<*const c_char>,
-        cfopts: &mut Vec<*const ffi::rocksdb_options_t>,
-        cfhandles: &mut Vec<*mut ffi::rocksdb_column_family_handle_t>
-    ) -> Result<(), Error> {
-        if self.initialized {
-            return Err(Error::new("Database is already open".into()));
-        }
-        let db = unsafe {
-            ffi_try!(ffi::rocksdb_optimistictransactiondb_open_column_families(
-                opts.inner,
-                cpath.as_ptr(),
-                num_cfs as c_int,
-                cfnames.as_mut_ptr(),
-                cfopts.as_mut_ptr(),
-                cfhandles.as_mut_ptr(),
-            ))
-        };
-        if db.is_null() {
-            return Err(Error::new("Failed to open database".into()));
-        }
-        self.inner = db;
-        self.initialized = true;
-        Ok(())
-    }
-
-    fn get_base_db(&self) -> Result<*mut ffi::rocksdb_t, Error> {
-        if !self.initialized {
-            return Err(Error::new("Database is not open".into()));
-        }
-        Ok(unsafe {
-            ffi::rocksdb_optimistictransactiondb_get_base_db(self.inner)
-        })
-    }
-
-    fn as_any(&self) -> &dyn Any {
-        self
-    }
-}
+use ffi_util::opt_bytes_to_ptr;
 
 pub struct OptimisticTransactionDB {
-    inner: BaseDb
+    inner: *mut ffi::rocksdb_optimistictransactiondb_t,
+    cfs: BTreeMap<String, ColumnFamily>,
+    path: PathBuf,
+}
+
+impl Drop for OptimisticTransactionDB {
+    fn drop(&mut self) {
+        for cf in self.cfs.values() {
+            unsafe { ffi::rocksdb_column_family_handle_destroy(cf.inner); }
+        }
+        unsafe { ffi::rocksdb_optimistictransactiondb_close(self.inner); }
+    }
 }
 
 impl fmt::Debug for OptimisticTransactionDB {
@@ -153,18 +86,9 @@ impl OptimisticTransactionDB {
         txnopts: &OptimisticTransactionOptions,
         old_txn: Option<Transaction>
     ) -> Transaction {
-        // FIXME this is pretty gross but what else can we do?
-        let opttxndb = self
-            .inner
-            .inner()
-            .as_any()
-            .downcast_ref::<OptTxnDbBaseDbImpl>()
-            .expect("Contained BaseDbImpl is of the wrong type")
-            .inner;
-
         let txn = unsafe {
             ffi::rocksdb_optimistictransaction_begin(
-                opttxndb,
+                self.inner,
                 writeopts.inner,
                 txnopts.inner,
                 match old_txn {
@@ -180,82 +104,233 @@ impl OptimisticTransactionDB {
         }
     }
 
+    fn get_base_db(&self) -> *mut ffi::rocksdb_t {
+        let db = unsafe { ffi::rocksdb_optimistictransactiondb_get_base_db(self.inner) };
+        assert!(!db.is_null());
+        db
+    }
+
     // FIXME don't need this right?
     // extern "C" {
     //     pub fn rocksdb_optimistictransactiondb_close_base_db(base_db: *mut rocksdb_t);
     // }
 
-    // FIXME write macro that impls the functions from here down with the appropriate BaseDbImpl
+    // FIXME copypasta from here down
 
     /// Open a database with default options.
     pub fn open_default<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
-        Ok(Self {
-            inner: BaseDb::open_default::<P, OptTxnDbBaseDbImpl>(path)?
-        })
+        let mut opts = Options::default();
+        opts.create_if_missing(true);
+        Self::open(&opts, path)
     }
 
     /// Open the database with the specified options.
     pub fn open<P: AsRef<Path>>(opts: &Options, path: P) -> Result<Self, Error> {
-        Ok(Self {
-            inner: BaseDb::open::<P, OptTxnDbBaseDbImpl>(opts, path)?
-        })
+        Self::open_cf(opts, path, &[])
     }
 
     /// Open a database with the given database options and column family names.
     ///
     /// Column families opened using this function will be created with default `Options`.
     pub fn open_cf<P: AsRef<Path>>(opts: &Options, path: P, cfs: &[&str]) -> Result<Self, Error> {
-        Ok(Self {
-            inner: BaseDb::open_cf::<P, OptTxnDbBaseDbImpl>(opts, path, cfs)?
-        })
+        let cfs_v = cfs.to_vec().iter().map(|name| ColumnFamilyDescriptor::new(*name, Options::default())).collect();
+
+        Self::open_cf_descriptors(opts, path, cfs_v)
     }
 
     /// Open a database with the given database options and column family names/options.
-    pub fn open_cf_descriptors<P: AsRef<Path>>(
-        opts: &Options,
-        path: P,
-        cfs: Vec<ColumnFamilyDescriptor>
-    ) -> Result<Self, Error> {
+    pub fn open_cf_descriptors<P: AsRef<Path>>(opts: &Options, path: P, cfs: Vec<ColumnFamilyDescriptor>) -> Result<Self, Error> {
+        let path = path.as_ref();
+        let cpath = match CString::new(path.to_string_lossy().as_bytes()) {
+            Ok(c) => c,
+            Err(_) => {
+                return Err(Error::new(
+                    "Failed to convert path to CString \
+                                       when opening DB."
+                        .to_owned(),
+                ))
+            }
+        };
+
+        if let Err(e) = fs::create_dir_all(&path) {
+            return Err(Error::new(format!(
+                "Failed to create RocksDB\
+                                           directory: `{:?}`.",
+                e
+            )));
+        }
+
+        let db: *mut ffi::rocksdb_optimistictransactiondb_t;
+        let mut cf_map = BTreeMap::new();
+
+        if cfs.len() == 0 {
+            unsafe {
+                db = ffi_try!(ffi::rocksdb_optimistictransactiondb_open(
+                    opts.inner,
+                    cpath.as_ptr() as *const _,
+                ));
+            }
+        } else {
+            let mut cfs_v = cfs;
+            // Always open the default column family.
+            if !cfs_v.iter().any(|cf| cf.name == "default") {
+                cfs_v.push(ColumnFamilyDescriptor {
+                    name: String::from("default"),
+                    options: Options::default()
+                });
+            }
+            // We need to store our CStrings in an intermediate vector
+            // so that their pointers remain valid.
+            let c_cfs: Vec<CString> = cfs_v
+                .iter()
+                .map(|cf| CString::new(cf.name.as_bytes()).unwrap())
+                .collect();
+
+            let mut cfnames: Vec<_> = c_cfs.iter().map(|cf| cf.as_ptr()).collect();
+
+            // These handles will be populated by DB.
+            let mut cfhandles: Vec<_> = cfs_v.iter().map(|_| ptr::null_mut()).collect();
+
+            let mut cfopts: Vec<_> = cfs_v.iter()
+                .map(|cf| cf.options.inner as *const _)
+                .collect();
+
+            unsafe {
+                db = ffi_try!(ffi::rocksdb_optimistictransactiondb_open_column_families(
+                    opts.inner,
+                    cpath.as_ptr(),
+                    cfs_v.len() as c_int,
+                    cfnames.as_mut_ptr(),
+                    cfopts.as_mut_ptr(),
+                    cfhandles.as_mut_ptr(),));
+            }
+
+            for handle in &cfhandles {
+                if handle.is_null() {
+                    return Err(Error::new(
+                        "Received null column family \
+                                           handle from DB."
+                            .to_owned(),
+                    ));
+                }
+            }
+
+            for (n, h) in cfs_v.iter().zip(cfhandles) {
+                cf_map.insert(n.name.clone(), ColumnFamily { inner: h });
+            }
+        }
+
+        if db.is_null() {
+            return Err(Error::new("Could not initialize database.".to_owned()));
+        }
+
         Ok(Self {
-            inner: BaseDb::open_cf_descriptors::<P, OptTxnDbBaseDbImpl>(opts, path, cfs)?
+            inner: db,
+            cfs: cf_map,
+            path: path.to_path_buf(),
         })
     }
 
     pub fn list_cf<P: AsRef<Path>>(opts: &Options, path: P) -> Result<Vec<String>, Error> {
-        BaseDb::list_cf(opts, path)
+        let cpath = match CString::new(path.as_ref().to_string_lossy().as_bytes()) {
+            Ok(c) => c,
+            Err(_) => {
+                return Err(Error::new(
+                    "Failed to convert path to CString \
+                                       when opening DB."
+                        .to_owned(),
+                ))
+            }
+        };
+
+        let mut length = 0;
+
+        unsafe {
+            let ptr = ffi_try!(ffi::rocksdb_list_column_families(
+                opts.inner,
+                cpath.as_ptr() as *const _,
+                &mut length,
+            ));
+
+            let vec = slice::from_raw_parts(ptr, length)
+                .iter()
+                .map(|ptr| CStr::from_ptr(*ptr).to_string_lossy().into_owned())
+                .collect();
+            ffi::rocksdb_list_column_families_destroy(ptr, length);
+            Ok(vec)
+        }
     }
 
+
     pub fn destroy<P: AsRef<Path>>(opts: &Options, path: P) -> Result<(), Error> {
-        BaseDb::destroy(opts, path)
+        let cpath = CString::new(path.as_ref().to_string_lossy().as_bytes()).unwrap();
+        unsafe {
+            ffi_try!(ffi::rocksdb_destroy_db(opts.inner, cpath.as_ptr(),));
+        }
+        Ok(())
     }
 
     pub fn repair<P: AsRef<Path>>(opts: Options, path: P) -> Result<(), Error> {
-        BaseDb::repair(opts, path)
+        let cpath = CString::new(path.as_ref().to_string_lossy().as_bytes()).unwrap();
+        unsafe {
+            ffi_try!(ffi::rocksdb_repair_db(opts.inner, cpath.as_ptr(),));
+        }
+        Ok(())
     }
 
     pub fn path(&self) -> &Path {
-        self.inner.path()
+        &self.path.as_path()
     }
 
     pub fn write_opt(&self, batch: WriteBatch, writeopts: &WriteOptions) -> Result<(), Error> {
-        self.inner.write_opt(batch, writeopts)
+        unsafe {
+            ffi_try!(ffi::rocksdb_write(self.get_base_db(), writeopts.inner, batch.inner,));
+        }
+        Ok(())
     }
 
     pub fn write(&self, batch: WriteBatch) -> Result<(), Error> {
-        self.inner.write(batch)
+        self.write_opt(batch, &WriteOptions::default())
     }
 
     pub fn write_without_wal(&self, batch: WriteBatch) -> Result<(), Error> {
-        self.inner.write_without_wal(batch)
+        let mut wo = WriteOptions::new();
+        wo.disable_wal(true);
+        self.write_opt(batch, &wo)
     }
 
     pub fn get_opt(&self, key: &[u8], readopts: &ReadOptions) -> Result<Option<DBVector>, Error> {
-        self.inner.get_opt(key, readopts)
+        if readopts.inner.is_null() {
+            return Err(Error::new(
+                "Unable to create RocksDB read options. \
+                                   This is a fairly trivial call, and its \
+                                   failure may be indicative of a \
+                                   mis-compiled or mis-loaded RocksDB \
+                                   library."
+                    .to_owned(),
+            ));
+        }
+
+        unsafe {
+            let mut val_len: size_t = 0;
+            let val = ffi_try!(ffi::rocksdb_get(
+                self.get_base_db(),
+                readopts.inner,
+                key.as_ptr() as *const c_char,
+                key.len() as size_t,
+                &mut val_len,
+            )) as *mut u8;
+            if val.is_null() {
+                Ok(None)
+            } else {
+                Ok(Some(DBVector::from_c(val, val_len)))
+            }
+        }
     }
 
     /// Return the bytes associated with a key value
     pub fn get(&self, key: &[u8]) -> Result<Option<DBVector>, Error> {
-        self.inner.get(key)
+        self.get_opt(key, &ReadOptions::default())
     }
 
     pub fn get_cf_opt(
@@ -264,39 +339,102 @@ impl OptimisticTransactionDB {
         key: &[u8],
         readopts: &ReadOptions,
     ) -> Result<Option<DBVector>, Error> {
-        self.inner.get_cf_opt(cf, key, readopts)
+        if readopts.inner.is_null() {
+            return Err(Error::new(
+                "Unable to create RocksDB read options. \
+                                   This is a fairly trivial call, and its \
+                                   failure may be indicative of a \
+                                   mis-compiled or mis-loaded RocksDB \
+                                   library."
+                    .to_owned(),
+            ));
+        }
+
+        unsafe {
+            let mut val_len: size_t = 0;
+            let val = ffi_try!(ffi::rocksdb_get_cf(
+                self.get_base_db(),
+                readopts.inner,
+                cf.inner,
+                key.as_ptr() as *const c_char,
+                key.len() as size_t,
+                &mut val_len,
+            )) as *mut u8;
+            if val.is_null() {
+                Ok(None)
+            } else {
+                Ok(Some(DBVector::from_c(val, val_len)))
+            }
+        }
     }
 
     pub fn get_cf(&self, cf: ColumnFamily, key: &[u8]) -> Result<Option<DBVector>, Error> {
-        self.inner.get_cf(cf, key)
+        self.get_cf_opt(cf, key, &ReadOptions::default())
     }
 
     pub fn create_cf(&mut self, name: &str, opts: &Options) -> Result<ColumnFamily, Error> {
-        self.inner.create_cf(name, opts)
+        let cname = match CString::new(name.as_bytes()) {
+            Ok(c) => c,
+            Err(_) => {
+                return Err(Error::new(
+                    "Failed to convert path to CString \
+                                       when opening rocksdb"
+                        .to_owned(),
+                ))
+            }
+        };
+        let cf = unsafe {
+            let cf_handler = ffi_try!(ffi::rocksdb_create_column_family(
+                self.get_base_db(),
+                opts.inner,
+                cname.as_ptr(),
+            ));
+            let cf = ColumnFamily { inner: cf_handler };
+            self.cfs.insert(name.to_string(), cf);
+            cf
+        };
+        Ok(cf)
     }
 
     pub fn drop_cf(&mut self, name: &str) -> Result<(), Error> {
-        self.inner.drop_cf(name)
+        let cf = self.cfs.get(name);
+        if cf.is_none() {
+            return Err(Error::new(
+                format!("Invalid column family: {}", name).to_owned(),
+            ));
+        }
+        unsafe {
+            ffi_try!(ffi::rocksdb_drop_column_family(
+                self.get_base_db(),
+                cf.unwrap().inner,
+            ));
+        }
+        Ok(())
     }
 
     /// Return the underlying column family handle.
     pub fn cf_handle(&self, name: &str) -> Option<ColumnFamily> {
-        self.inner.cf_handle(name)
+        self.cfs.get(name).cloned()
     }
 
     pub fn iterator(&self, mode: IteratorMode) -> DBIterator {
-        self.inner.iterator(mode)
+        let opts = ReadOptions::default();
+        DBIterator::new_xxx(self.get_base_db(), &opts, mode)
     }
 
     /// Opens an interator with `set_total_order_seek` enabled.
     /// This must be used to iterate across prefixes when `set_memtable_factory` has been called
     /// with a Hash-based implementation.
     pub fn full_iterator(&self, mode: IteratorMode) -> DBIterator {
-        self.inner.full_iterator(mode)
+        let mut opts = ReadOptions::default();
+        opts.set_total_order_seek(true);
+        DBIterator::new_xxx(self.get_base_db(), &opts, mode)
     }
 
     pub fn prefix_iterator<'a>(&self, prefix: &'a [u8]) -> DBIterator {
-        self.inner.prefix_iterator(prefix)
+        let mut opts = ReadOptions::default();
+        opts.set_prefix_same_as_start(true);
+        DBIterator::new_xxx(self.get_base_db(), &opts, IteratorMode::From(prefix, Direction::Forward))
     }
 
     pub fn iterator_cf(
@@ -304,7 +442,8 @@ impl OptimisticTransactionDB {
         cf_handle: ColumnFamily,
         mode: IteratorMode,
     ) -> Result<DBIterator, Error> {
-        self.inner.iterator_cf(cf_handle, mode)
+        let opts = ReadOptions::default();
+        DBIterator::new_cf_xxx(self.get_base_db(), cf_handle, &opts, mode)
     }
 
     pub fn full_iterator_cf(
@@ -312,7 +451,9 @@ impl OptimisticTransactionDB {
         cf_handle: ColumnFamily,
         mode: IteratorMode,
     ) -> Result<DBIterator, Error> {
-        self.inner.full_iterator_cf(cf_handle, mode)
+        let mut opts = ReadOptions::default();
+        opts.set_total_order_seek(true);
+        DBIterator::new_cf_xxx(self.get_base_db(), cf_handle, &opts, mode)
     }
 
     pub fn prefix_iterator_cf<'a>(
@@ -320,23 +461,39 @@ impl OptimisticTransactionDB {
         cf_handle: ColumnFamily,
         prefix: &'a [u8]
     ) -> Result<DBIterator, Error> {
-        self.inner.prefix_iterator_cf(cf_handle, prefix)
+        let mut opts = ReadOptions::default();
+        opts.set_prefix_same_as_start(true);
+        DBIterator::new_cf_xxx(self.get_base_db(), cf_handle, &opts, IteratorMode::From(prefix, Direction::Forward))
     }
 
     pub fn raw_iterator(&self) -> DBRawIterator {
-        self.inner.raw_iterator()
+        let opts = ReadOptions::default();
+        DBRawIterator::new_xxx(self.get_base_db(), &opts)
     }
 
     pub fn raw_iterator_cf(&self, cf_handle: ColumnFamily) -> Result<DBRawIterator, Error> {
-        self.inner.raw_iterator_cf(cf_handle)
+        let opts = ReadOptions::default();
+        DBRawIterator::new_cf_xxx(self.get_base_db(), cf_handle, &opts)
     }
 
     pub fn snapshot(&self) -> Snapshot {
-        self.inner.snapshot()
+        // FIXME modify snapshot API
+        // Snapshot::new(self)
+        unimplemented!()
     }
 
     pub fn put_opt(&self, key: &[u8], value: &[u8], writeopts: &WriteOptions) -> Result<(), Error> {
-        self.inner.put_opt(key, value, writeopts)
+        unsafe {
+            ffi_try!(ffi::rocksdb_put(
+                self.get_base_db(),
+                writeopts.inner,
+                key.as_ptr() as *const c_char,
+                key.len() as size_t,
+                value.as_ptr() as *const c_char,
+                value.len() as size_t,
+            ));
+            Ok(())
+        }
     }
 
     pub fn put_cf_opt(
@@ -346,7 +503,18 @@ impl OptimisticTransactionDB {
         value: &[u8],
         writeopts: &WriteOptions,
     ) -> Result<(), Error> {
-        self.inner.put_cf_opt(cf, key, value, writeopts)
+        unsafe {
+            ffi_try!(ffi::rocksdb_put_cf(
+                self.get_base_db(),
+                writeopts.inner,
+                cf.inner,
+                key.as_ptr() as *const c_char,
+                key.len() as size_t,
+                value.as_ptr() as *const c_char,
+                value.len() as size_t,
+            ));
+            Ok(())
+        }
     }
 
     pub fn merge_opt(
@@ -355,7 +523,17 @@ impl OptimisticTransactionDB {
         value: &[u8],
         writeopts: &WriteOptions,
     ) -> Result<(), Error> {
-        self.inner.merge_opt(key, value, writeopts)
+        unsafe {
+            ffi_try!(ffi::rocksdb_merge(
+                self.get_base_db(),
+                writeopts.inner,
+                key.as_ptr() as *const c_char,
+                key.len() as size_t,
+                value.as_ptr() as *const c_char,
+                value.len() as size_t,
+            ));
+            Ok(())
+        }
     }
 
     pub fn merge_cf_opt(
@@ -365,11 +543,30 @@ impl OptimisticTransactionDB {
         value: &[u8],
         writeopts: &WriteOptions,
     ) -> Result<(), Error> {
-        self.inner.merge_cf_opt(cf, key, value, writeopts)
+        unsafe {
+            ffi_try!(ffi::rocksdb_merge_cf(
+                self.get_base_db(),
+                writeopts.inner,
+                cf.inner,
+                key.as_ptr() as *const c_char,
+                key.len() as size_t,
+                value.as_ptr() as *const c_char,
+                value.len() as size_t,
+            ));
+            Ok(())
+        }
     }
 
     pub fn delete_opt(&self, key: &[u8], writeopts: &WriteOptions) -> Result<(), Error> {
-        self.inner.delete_opt(key, &writeopts)
+        unsafe {
+            ffi_try!(ffi::rocksdb_delete(
+                self.get_base_db(),
+                writeopts.inner,
+                key.as_ptr() as *const c_char,
+                key.len() as size_t,
+            ));
+            Ok(())
+        }
     }
 
     pub fn delete_cf_opt(
@@ -378,38 +575,64 @@ impl OptimisticTransactionDB {
         key: &[u8],
         writeopts: &WriteOptions,
     ) -> Result<(), Error> {
-        self.inner.delete_cf_opt(cf, key, writeopts)
+        unsafe {
+            ffi_try!(ffi::rocksdb_delete_cf(
+                self.get_base_db(),
+                writeopts.inner,
+                cf.inner,
+                key.as_ptr() as *const c_char,
+                key.len() as size_t,
+            ));
+            Ok(())
+        }
     }
 
     pub fn put(&self, key: &[u8], value: &[u8]) -> Result<(), Error> {
-        self.inner.put(key, value)
+        self.put_opt(key, value, &WriteOptions::default())
     }
 
     pub fn put_cf(&self, cf: ColumnFamily, key: &[u8], value: &[u8]) -> Result<(), Error> {
-        self.inner.put_cf(cf, key, value)
+        self.put_cf_opt(cf, key, value, &WriteOptions::default())
     }
 
     pub fn merge(&self, key: &[u8], value: &[u8]) -> Result<(), Error> {
-        self.inner.merge(key, value)
+        self.merge_opt(key, value, &WriteOptions::default())
     }
 
     pub fn merge_cf(&self, cf: ColumnFamily, key: &[u8], value: &[u8]) -> Result<(), Error> {
-        self.inner.merge_cf(cf, key, value)
+        self.merge_cf_opt(cf, key, value, &WriteOptions::default())
     }
 
     pub fn delete(&self, key: &[u8]) -> Result<(), Error> {
-        self.inner.delete(key)
+        self.delete_opt(key, &WriteOptions::default())
     }
 
     pub fn delete_cf(&self, cf: ColumnFamily, key: &[u8]) -> Result<(), Error> {
-        self.inner.delete_cf(cf, key)
+        self.delete_cf_opt(cf, key, &WriteOptions::default())
     }
 
     pub fn compact_range(&self, start: Option<&[u8]>, end: Option<&[u8]>) {
-        self.inner.compact_range(start, end)
+        unsafe {
+            ffi::rocksdb_compact_range(
+                self.get_base_db(),
+                opt_bytes_to_ptr(start),
+                start.map_or(0, |s| s.len()) as size_t,
+                opt_bytes_to_ptr(end),
+                end.map_or(0, |e| e.len()) as size_t,
+            );
+        }
     }
 
     pub fn compact_range_cf(&self, cf: ColumnFamily, start: Option<&[u8]>, end: Option<&[u8]>) {
-        self.inner.compact_range_cf(cf, start, end)
+        unsafe {
+            ffi::rocksdb_compact_range_cf(
+                self.get_base_db(),
+                cf.inner,
+                opt_bytes_to_ptr(start),
+                start.map_or(0, |s| s.len()) as size_t,
+                opt_bytes_to_ptr(end),
+                end.map_or(0, |e| e.len()) as size_t,
+            );
+        }
     }
 }
