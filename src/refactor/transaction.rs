@@ -381,3 +381,60 @@ impl DatabaseSnapshotting for Transaction {
         Snapshot::from_txn(&self)
     }
 }
+
+#[cfg(test)]
+mod test {
+    use super::*;
+    use crate::refactor::{
+        common::DatabaseIterator,
+        database::{DBTool, Options, OptimisticTransactionDB},
+        traits::DatabaseWriteNoOptOperations,
+    };
+
+    fn put(db: &OptimisticTransactionDB, key: &str, value: &str) {
+        eprintln!("Put {} ({:?}) => {}", key, &AsRef::<[u8]>::as_ref(key), value);
+        db.put(&key.as_ref(), &value.as_ref()).unwrap();
+    }
+
+    fn get(iter: &mut DatabaseIterator, expected_key: &str, expected_value: &str) {
+        let (key_bytes, value) = iter.next().unwrap();
+        let (key, value) = (
+            std::str::from_utf8(&*key_bytes).unwrap(),
+            std::str::from_utf8(&*value).unwrap()
+        );
+        eprintln!("Got {} ({:?}) => {}", key, &key_bytes, value);
+        assert_eq!(key, expected_key);
+        assert_eq!(value, expected_value);
+    }
+
+    #[test]
+    fn test_opttxndb_prefix_iterator() {
+        let db_path = "stupid_test_db";
+        DBTool::destroy(&Options::default(), db_path).unwrap();
+
+        eprintln!("Opening {}", db_path);
+        let db = OptimisticTransactionDB::open_default(db_path).unwrap();
+
+        put(&db, "foobar", "baz");
+        put(&db, "new-key", "new-value");
+        put(&db, "foo", "bar");
+        put(&db, "my.key", "my-value");
+        put(&db, "hello", "world");
+        put(&db, "foo.bar", "abc123");
+
+        let mut iter = db.iter_prefix("foo".as_ref());
+        get(&mut iter, "foo", "bar");
+        get(&mut iter, "foo.bar", "abc123");
+        get(&mut iter, "foobar", "baz");
+        get(&mut iter, "hello", "world");
+        get(&mut iter, "my.key", "my-value");
+        get(&mut iter, "new-key", "new-value");
+        assert!(iter.next().is_none());
+
+        drop(iter);
+        drop(db);
+
+        eprintln!("destroying {}", db_path);
+        DBTool::destroy(&Options::default(), db_path).unwrap();
+    }
+}

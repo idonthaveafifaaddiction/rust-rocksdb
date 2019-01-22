@@ -160,6 +160,16 @@ impl DBTool {
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
+#[derive(Debug, Copy, Clone, PartialEq)]
+pub enum DBRecoveryMode {
+    TolerateCorruptedTailRecords = ffi::rocksdb_tolerate_corrupted_tail_records_recovery as isize,
+    AbsoluteConsistency = ffi::rocksdb_absolute_consistency_recovery as isize,
+    PointInTime = ffi::rocksdb_point_in_time_recovery as isize,
+    SkipAnyCorruptedRecord = ffi::rocksdb_skip_any_corrupted_records_recovery as isize
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+
 /// Database-wide options around performance and behavior.
 ///
 /// Please read
@@ -224,10 +234,41 @@ impl Drop for Options {
 
 // FIXME FIXME add all functions...
 impl Options {
-    pub fn create_if_missing(&mut self, create_if_missing: bool) {
+    pub fn new() -> Self {
+        Default::default()
+    }
+
+    pub fn create_if_missing(self, create_if_missing: bool) -> Self {
         unsafe {
             ffi::rocksdb_options_set_create_if_missing(self.inner, create_if_missing as c_uchar);
         }
+        self
+    }
+
+    /// Recovery mode to control the consistency while replaying WAL.
+    ///
+    /// Default: DBRecoveryMode::PointInTime
+    ///
+    /// # Example
+    ///
+    /// ```
+    /// use rocksdb::{Options, DBRecoveryMode};
+    ///
+    /// let mut opts = Options::default();
+    /// opts.set_wal_recovery_mode(DBRecoveryMode::AbsoluteConsistency);
+    /// ```
+    pub fn wal_recovery_mode(self, mode: DBRecoveryMode) -> Self {
+        unsafe {
+            ffi::rocksdb_options_set_wal_recovery_mode(self.inner, mode as c_int);
+        }
+        self
+    }
+
+    pub fn paranoid_checks(self, paranoid_checks: bool) -> Self {
+        unsafe {
+            ffi::rocksdb_options_set_paranoid_checks(self.inner, paranoid_checks as c_uchar);
+        }
+        self
     }
 }
 
@@ -267,8 +308,8 @@ impl DB {
         where
             P: AsRef<Path>
     {
-        let mut opts = Options::default();
-        opts.create_if_missing(true);
+        let opts = Options::default()
+            .create_if_missing(true);
         Self::open(&opts, path)
     }
 
@@ -582,8 +623,8 @@ impl OptimisticTransactionDB {
         where
             P: AsRef<Path>
     {
-        let mut opts = Options::default();
-        opts.create_if_missing(true);
+        let opts = Options::default()
+            .create_if_missing(true);
         Self::open(&opts, path)
     }
 
@@ -957,8 +998,8 @@ impl TransactionDB {
 
     /// Open a transaction database with default options.
     pub fn open_default<P: AsRef<Path>>(path: P) -> Result<Self, Error> {
-        let mut opts = Options::default();
-        opts.create_if_missing(true);
+        let opts = Options::default()
+            .create_if_missing(true);
         let txndb_opts = TransactionDBOptions::default();
         Self::open(&opts, &txndb_opts, path)
     }
