@@ -49,7 +49,7 @@ fn build_rocksdb() {
     config.include("rocksdb/include/");
     config.include("rocksdb/");
     config.include("rocksdb/third-party/gtest-1.7.0/fused-src/");
-    
+
     if cfg!(feature = "snappy") {
         config.define("SNAPPY", Some("1"));
         config.include("snappy/");
@@ -70,7 +70,7 @@ fn build_rocksdb() {
         config.define("ZLIB", Some("1"));
         config.include("zlib/");
     }
-    
+
     if cfg!(feature = "bzip2") {
         config.define("BZIP2", Some("1"));
         config.include("bzip2/");
@@ -176,7 +176,7 @@ fn build_snappy() {
 
 fn build_lz4() {
     let mut compiler = cc::Build::new();
-    
+
     compiler
         .file("lz4/lib/lz4.c")
         .file("lz4/lib/lz4frame.c")
@@ -198,7 +198,7 @@ fn build_lz4() {
 
 fn build_zstd() {
     let mut compiler = cc::Build::new();
-    
+
     compiler.include("zstd/lib/");
     compiler.include("zstd/lib/common");
     compiler.include("zstd/lib/legacy");
@@ -226,7 +226,7 @@ fn build_zstd() {
 
 fn build_zlib() {
     let mut compiler = cc::Build::new();
-    
+
     let globs = &[
         "zlib/*.c"
     ];
@@ -244,7 +244,7 @@ fn build_zlib() {
 
 fn build_bzip2() {
     let mut compiler = cc::Build::new();
-    
+
     compiler
         .file("bzip2/blocksort.c")
         .file("bzip2/bzlib.c")
