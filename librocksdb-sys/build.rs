@@ -3,9 +3,7 @@ extern crate bindgen;
 extern crate glob;
 extern crate pkg_config;
 
-use std::env;
-use std::fs;
-use std::path::PathBuf;
+use std::{env, path::{Path, PathBuf}, fs};
 
 const ROCKSDB_VERSION: &'static str = "5.14.2";
 // FIXME the constants below are wrong
@@ -67,8 +65,45 @@ fn fail_on_empty_directory(name: &str) {
     }
 }
 
-fn bindgen_rocksdb() {
-    let bindings = bindgen::Builder::default()
+fn bindgen_rocksdb(rocksdb_lib_info: Option<pkg_config::Library>) {
+    // FIXME make note aboue stupid buildroot hack
+    let include_paths = if let Some(lib_info) = rocksdb_lib_info {
+        let mut include_paths: Vec<_> = lib_info
+            .include_paths
+            .iter()
+            .map(|path| path.to_str().expect("Failed to stringify include path").to_owned())
+            .collect();
+        let sysroot = &get_env("PKG_CONFIG_SYSROOT_DIR").unwrap();
+        let buildroot_staging_dir = Path::new(sysroot)
+            .parent()
+            .expect("Failed to get buildroot output directory")
+            .join("staging");
+        if buildroot_staging_dir.is_dir() {
+            include_paths.extend(lib_info.include_paths.iter().filter_map(|path| {
+                if path.starts_with(sysroot) {
+                    Some(
+                        buildroot_staging_dir
+                            .join(path.strip_prefix(sysroot).unwrap())
+                            .to_str()
+                            .unwrap()
+                            .to_owned()
+                    )
+                } else {
+                    None
+                }
+            }));
+        }
+
+        include_paths
+    } else {
+        vec!["rocksdb/include".into()]
+    };
+
+    let bindings = include_paths
+        .iter()
+        .fold(bindgen::Builder::default(), |builder, include_path| {
+            builder.clang_arg(format!("-I{}", include_path))
+        })
         .header("rocksdb/include/rocksdb/c.h")
         .blacklist_type("max_align_t") // https://github.com/rust-lang-nursery/rust-bindgen/issues/550
         .ctypes_prefix("libc")
@@ -299,24 +334,32 @@ fn build_bzip2() {
     compiler.compile("libbz2.a");
 }
 
+// FIXME clean this mess up
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
 
     let use_pkg_config = get_env("LIBROCKSDB_SYS_USE_PKG_CONFIG").map_or(false, |s| s == "1");
 
+    // FIXME remove?
     if let Some(link_search_native_dir) = get_env("LIBROCKSDB_SYS_LINK_SEARCH_NATIVE_DIR") {
         println!("cargo:rustc-link-search-native={}", link_search_native_dir);
     }
 
     println!("cargo:rerun-if-changed=rocksdb/");
     fail_on_empty_directory("rocksdb");
-    bindgen_rocksdb();
+
+    let rocksdb_lib_info = if use_pkg_config {
+        match probe_library("librocksdb", ROCKSDB_VERSION, true) {
+            Ok(lib_info) => Some(lib_info),
+            Err(err) => panic!("{}", err)
+        }
+    } else {
+        None
+    };
+    bindgen_rocksdb(rocksdb_lib_info);
 
     if !use_pkg_config {
         build_rocksdb();
-    } else if let Err(err) = probe_library("librocksdb", ROCKSDB_VERSION, true) {
-        eprintln!("{}", err);
-        println!("cargo:rustc-link-lib=dylib=rocksdb");
     }
 
     if cfg!(feature = "snappy") {
