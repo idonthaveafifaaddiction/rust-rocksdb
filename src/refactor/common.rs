@@ -17,8 +17,7 @@
 //
 // Software written by Steven Sloboda <ssloboda@starry.com>.
 
-use std::ops::Deref;
-use std::rc::Rc;
+use std::{ops::Deref, sync::Arc};
 
 use libc::{c_char, c_int, c_uchar, c_void};
 
@@ -446,7 +445,7 @@ impl RawDatabaseIterator {
     }
 
     pub(crate) fn from_db_cf(
-        db: Rc<InnerDB>,
+        db: Arc<InnerDB>,
         cf_handle: ColumnFamily,
         readopts: &ReadOptions,
     ) -> Self {
