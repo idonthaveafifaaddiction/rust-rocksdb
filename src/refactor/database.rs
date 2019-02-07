@@ -58,6 +58,7 @@ use refactor::utils::{c_buf_to_opt_dbvec, pathref_to_cstring};
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
+#[derive(Clone)]
 pub(crate) enum InnerDbType {
     DB(Arc<InnerDB>),
     TxnDB(Arc<InnerTransactionDB>)
