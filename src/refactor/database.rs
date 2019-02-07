@@ -17,13 +17,15 @@
 //
 // Software written by Steven Sloboda <ssloboda@starry.com>.
 
-use std::collections::BTreeMap;
-use std::ffi::{CStr, CString};
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::ptr;
-use std::rc::Rc;
-use std::slice;
+use std::{
+    collections::BTreeMap,
+    ffi::{CStr, CString},
+    fs,
+    path::{Path, PathBuf},
+    ptr,
+    sync::Arc,
+    slice
+};
 
 use libc::{c_char, c_int, c_uchar};
 
@@ -57,8 +59,8 @@ use refactor::utils::{c_buf_to_opt_dbvec, pathref_to_cstring};
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 pub(crate) enum InnerDbType {
-    DB(Rc<InnerDB>),
-    TxnDB(Rc<InnerTransactionDB>)
+    DB(Arc<InnerDB>),
+    TxnDB(Arc<InnerTransactionDB>)
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -290,7 +292,7 @@ impl Drop for InnerDB {
 }
 
 pub struct DB {
-    inner: Rc<InnerDB>,
+    inner: Arc<InnerDB>,
     cfs: BTreeMap<String, ColumnFamily>,  // FIXME where is this used?
     path: PathBuf
 
@@ -385,7 +387,7 @@ impl DB {
         };
 
         Ok(Self {
-            inner: Rc::new(InnerDB { inner: db, drop_fn: ffi::rocksdb_close }),
+            inner: Arc::new(InnerDB { inner: db, drop_fn: ffi::rocksdb_close }),
             cfs: cf_map,
             path: path.to_path_buf(),
         })
@@ -720,7 +722,7 @@ impl OptimisticTransactionDB {
             panic!("Could not get base DB for RocksDB OptimisticTransactionDB");
         }
         DB {
-            inner: Rc::new(InnerDB {
+            inner: Arc::new(InnerDB {
                 inner: db,
                 drop_fn: ffi::rocksdb_optimistictransactiondb_close_base_db
             }),
@@ -984,7 +986,7 @@ impl Drop for InnerTransactionDB {
 }
 
 pub struct TransactionDB {
-    inner: Rc<InnerTransactionDB>,
+    inner: Arc<InnerTransactionDB>,
     path: PathBuf
 }
 
@@ -1017,7 +1019,7 @@ impl TransactionDB {
         }
 
         Ok(Self {
-            inner: Rc::new(InnerTransactionDB::open(&opts, &txndb_opts, &cpath)?),
+            inner: Arc::new(InnerTransactionDB::open(&opts, &txndb_opts, &cpath)?),
             path: path.to_path_buf()
         })
     }
