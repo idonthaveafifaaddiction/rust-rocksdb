@@ -343,13 +343,7 @@ impl DatabaseIteration for Transaction {
         let iter = unsafe {
             ffi::rocksdb_transaction_create_iterator(self.inner, readopts.inner)
         };
-        RawDatabaseIterator::from_raw(
-            iter,
-            match self.db {
-                InnerDbType::DB(ref db) => InnerDbType::DB(db.clone()),
-                InnerDbType::TxnDB(ref db) => InnerDbType::TxnDB(db.clone())
-            }
-        )
+        RawDatabaseIterator::from_raw(iter, self.db.clone())
     }
 }
 
@@ -366,13 +360,7 @@ impl ColumnFamilyIteration for Transaction {
                 cf_handle.inner
             )
         };
-        RawDatabaseIterator::from_raw(
-            iter,
-            match self.db {
-                InnerDbType::DB(ref db) => InnerDbType::DB(db.clone()),
-                InnerDbType::TxnDB(ref db) => InnerDbType::TxnDB(db.clone())
-            }
-        )
+        RawDatabaseIterator::from_raw(iter, self.db.clone())
     }
 }
 

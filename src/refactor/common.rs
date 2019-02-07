@@ -287,10 +287,7 @@ impl Snapshot {
         }
         Self {
             inner: snapshot,
-            db: match txn.db {
-                InnerDbType::DB(ref db) => InnerDbType::DB(db.clone()),
-                InnerDbType::TxnDB(ref db) => InnerDbType::TxnDB(db.clone())
-            }
+            db: txn.db.clone()
         }
     }
 }
@@ -326,16 +323,7 @@ impl DatabaseIteration for Snapshot {
 
     // FIXME FIXME FIXME readopts must have snapshot set to self
     fn iter_raw_opt(&self, readopts: &ReadOptions) -> RawDatabaseIterator {
-        match self.db {
-            InnerDbType::DB(ref db) => RawDatabaseIterator::from_innerdbtype(
-                InnerDbType::DB(db.clone()),
-                &readopts
-            ),
-            InnerDbType::TxnDB(ref db) => RawDatabaseIterator::from_innerdbtype(
-                InnerDbType::TxnDB(db.clone()),
-                &readopts
-            )
-        }
+        RawDatabaseIterator::from_innerdbtype(self.db.clone(), &readopts)
     }
 
     /// Opens an interator with `set_total_order_seek` enabled.
