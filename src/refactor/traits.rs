@@ -352,6 +352,18 @@ pub trait DatabaseIteration {
             DatabaseIteratorMode::From(prefix, DatabaseIteratorDirection::Forward)
         )
     }
+
+    fn iter_prefix_opt<'p>(
+        &self,
+        prefix: &'p [u8],
+        readopts: &mut ReadOptions // FIXME kinda gross that this is mut
+    ) -> DatabaseIterator {
+        readopts.set_prefix_same_as_start(true);
+        DatabaseIterator::from_raw(
+            self.iter_raw_opt(&readopts),
+            DatabaseIteratorMode::From(prefix, DatabaseIteratorDirection::Forward)
+        )
+    }
 }
 
 impl<'a, T> DatabaseIteration for &'a T where T: DatabaseIteration {
