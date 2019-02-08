@@ -23,12 +23,6 @@ use libc::{c_char, c_int, c_uchar, c_void};
 
 use ffi;
 use refactor::database::{InnerDB, InnerDbType, Options};
-// use refactor::errors::Error;
-use refactor::traits::{
-    ColumnFamilyIteration,
-    DatabaseIteration,
-    // DatabaseReadNoOptOperations
-};
 use refactor::transaction::Transaction;
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -241,6 +235,7 @@ impl DatabaseVector {
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
+/// Give this to `ReadOptions` to read/iterate on a snapshot.
 pub struct Snapshot {
     inner: *const ffi::rocksdb_snapshot_t,
     db: InnerDbType
@@ -289,109 +284,6 @@ impl Snapshot {
             inner: snapshot,
             db: txn.db.clone()
         }
-    }
-}
-
-// FIXME implement
-// FIXME FIXME FIXME Snapshot needs access to underlying DB operations
-// impl DatabaseReadNoOptOperations for Snapshot {
-//     fn get(&self, key: &[u8]) -> Result<Option<DatabaseVector>, Error> {
-//         let mut readopts = ReadOptions::default();
-//         readopts.set_snapshot(self);
-//         match self.db {
-//             InnerDbType::DB(ref db) => db.get_opt(&key, &readopts),
-//             InnerDbType::TxnDB(ref db) => db.get_opt(&key, &readopts)
-//         }
-//     }
-//
-//     fn get_cf(&self, cf_handle: ColumnFamily, key: &[u8]) -> Result<Option<DatabaseVector>, Error> {
-//         let mut readopts = ReadOptions::default();
-//         readopts.set_snapshot(self);
-//         match self.db {
-//             InnerDbType::DB(ref db) => db.get_opt_cf(cf_handle, &key, &readopts),
-//             InnerDbType::TxnDB(ref db) => db.get_opt_cf(cf_handle, &key, &readopts)
-//         }
-//     }
-// }
-
-impl DatabaseIteration for Snapshot {
-    fn iter_raw(&self) -> RawDatabaseIterator {
-        let mut readopts = ReadOptions::default();
-        readopts.set_snapshot(self);
-        self.iter_raw_opt(&readopts)
-    }
-
-    // FIXME FIXME FIXME readopts must have snapshot set to self
-    fn iter_raw_opt(&self, readopts: &ReadOptions) -> RawDatabaseIterator {
-        RawDatabaseIterator::from_innerdbtype(self.db.clone(), &readopts)
-    }
-
-    /// Opens an interator with `set_total_order_seek` enabled.
-    /// This must be used to iterate across prefixes when `set_memtable_factory` has been called
-    /// with a Hash-based implementation.
-    fn iter_full(&self, mode: DatabaseIteratorMode) -> DatabaseIterator {
-        let mut readopts = ReadOptions::default();
-        readopts.set_total_order_seek(true);
-        readopts.set_snapshot(self);
-        DatabaseIterator::from_raw(self.iter_raw_opt(&readopts), mode)
-    }
-
-    fn iter_prefix<'p>(&self, prefix: &'p [u8]) -> DatabaseIterator {
-        let mut readopts = ReadOptions::default();
-        readopts.set_prefix_same_as_start(true);
-        readopts.set_snapshot(self);
-        DatabaseIterator::from_raw(
-            self.iter_raw_opt(&readopts),
-            DatabaseIteratorMode::From(prefix, DatabaseIteratorDirection::Forward)
-        )
-    }
-}
-
-impl ColumnFamilyIteration for Snapshot {
-    fn iter_cf_raw(&self, cf_handle: ColumnFamily) -> RawDatabaseIterator {
-        let mut readopts = ReadOptions::default();
-        readopts.set_snapshot(self);
-        self.iter_cf_raw_opt(cf_handle, &readopts)
-    }
-
-    // FIXME FIXME FIXME readopts must have snapshot set to self
-    fn iter_cf_raw_opt(
-        &self,
-        cf_handle: ColumnFamily,
-        readopts: &ReadOptions
-    ) -> RawDatabaseIterator {
-        match self.db {
-            InnerDbType::DB(ref db) => {
-                RawDatabaseIterator::from_db_cf(db.clone(), cf_handle, &readopts)
-            },
-            // FIXME FIXME FIXME the abstraction we built breaks down here
-            InnerDbType::TxnDB(_) => unreachable!()
-        }
-    }
-
-    fn iter_cf(&self, cf_handle: ColumnFamily, mode: DatabaseIteratorMode) -> DatabaseIterator {
-        DatabaseIterator::from_raw(self.iter_cf_raw(cf_handle), mode)
-    }
-
-    fn iter_cf_full(
-        &self,
-        cf_handle: ColumnFamily,
-        mode: DatabaseIteratorMode
-    ) -> DatabaseIterator {
-        let mut readopts = ReadOptions::default();
-        readopts.set_total_order_seek(true);
-        readopts.set_snapshot(self);
-        DatabaseIterator::from_raw(self.iter_cf_raw_opt(cf_handle, &readopts), mode)
-    }
-
-    fn iter_cf_prefix<'p>(&self, cf_handle: ColumnFamily, prefix: &'p [u8]) -> DatabaseIterator {
-        let mut readopts = ReadOptions::default();
-        readopts.set_prefix_same_as_start(true);
-        readopts.set_snapshot(self);
-        DatabaseIterator::from_raw(
-            self.iter_cf_raw_opt(cf_handle, &readopts),
-            DatabaseIteratorMode::From(prefix, DatabaseIteratorDirection::Forward)
-        )
     }
 }
 
