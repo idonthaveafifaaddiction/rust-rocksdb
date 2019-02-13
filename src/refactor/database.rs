@@ -30,31 +30,35 @@ use std::{
 use libc::{c_char, c_int, c_uchar};
 
 use ffi;
-use refactor::errors::Error;
-use refactor::checkpoint::Checkpoint;
-use refactor::common::{
-    ColumnFamily,
-    ColumnFamilyDescriptor,
-    DatabaseVector,
-    RawDatabaseIterator,
-    ReadOptions,
-    Snapshot,
-    WriteOptions
+use refactor::{
+    backup::BackupEngine,
+    checkpoint::Checkpoint,
+    common::{
+        ColumnFamily,
+        ColumnFamilyDescriptor,
+        DatabaseVector,
+        RawDatabaseIterator,
+        ReadOptions,
+        Snapshot,
+        WriteOptions
+    },
+    errors::Error,
+    traits::{
+        ColumnFamilyIteration,
+        ColumnFamilyMergeOperations,
+        DatabaseBackups,
+        DatabaseCheckpoints,
+        DatabaseIteration,
+        DatabaseReadNoOptOperations,
+        DatabaseReadOptOperations,
+        DatabaseTransactions,
+        DatabaseSnapshotting,
+        DatabaseWriteNoOptOperations,
+        DatabaseWriteOptOperations
+    },
+    transaction::{OptimisticTransactionOptions, Transaction, TransactionOptions},
+    utils::{c_buf_to_opt_dbvec, pathref_to_cstring}
 };
-use refactor::traits::{
-    ColumnFamilyIteration,
-    ColumnFamilyMergeOperations,
-    DatabaseCheckpoints,
-    DatabaseIteration,
-    DatabaseReadNoOptOperations,
-    DatabaseReadOptOperations,
-    DatabaseTransactions,
-    DatabaseSnapshotting,
-    DatabaseWriteNoOptOperations,
-    DatabaseWriteOptOperations
-};
-use refactor::transaction::{OptimisticTransactionOptions, Transaction, TransactionOptions};
-use refactor::utils::{c_buf_to_opt_dbvec, pathref_to_cstring};
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -209,7 +213,7 @@ pub enum DBRecoveryMode {
 /// }
 /// ```
 pub struct Options {
-    inner: *mut ffi::rocksdb_options_t
+    pub(crate) inner: *mut ffi::rocksdb_options_t // FIXME
 }
 
 // XXX(ssloboda) why was this deemed okay?
@@ -893,6 +897,20 @@ impl DatabaseTransactions for OptimisticTransactionDB {
 impl DatabaseCheckpoints for OptimisticTransactionDB {
     fn checkpoint_object(&self) -> Result<Checkpoint, Error> {
         Checkpoint::from_innerdbtype(InnerDbType::DB(self.base_db.inner.clone()))
+    }
+}
+
+impl DatabaseBackups for OptimisticTransactionDB {
+    fn create_backup(&self, backup_engine: &BackupEngine) -> Result<(), Error> {
+        backup_engine.create_new_backup_from_db((*self.base_db.inner).inner)
+    }
+
+    fn create_backup_with_metadata(
+        &self,
+        backup_engine: &BackupEngine,
+        metadata: &CStr
+    ) -> Result<(), Error> {
+        backup_engine.create_new_backup_from_db_with_metadata((*self.base_db.inner).inner, metadata)
     }
 }
 
