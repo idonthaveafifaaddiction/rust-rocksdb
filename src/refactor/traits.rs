@@ -14,20 +14,25 @@
 //
 // Software written by Steven Sloboda <ssloboda@starry.com>.
 
-use refactor::errors::Error;
-use refactor::checkpoint::Checkpoint;
-use refactor::common::{
-    ColumnFamily,
-    DatabaseIterator,
-    DatabaseIteratorDirection,
-    DatabaseIteratorMode,
-    DatabaseVector,
-    RawDatabaseIterator,
-    ReadOptions,
-    Snapshot,
-    WriteOptions
+use refactor::{
+    backup::BackupEngine,
+    errors::Error,
+    checkpoint::Checkpoint,
+    common::{
+        ColumnFamily,
+        DatabaseIterator,
+        DatabaseIteratorDirection,
+        DatabaseIteratorMode,
+        DatabaseVector,
+        RawDatabaseIterator,
+        ReadOptions,
+        Snapshot,
+        WriteOptions
+    },
+    transaction::Transaction
 };
-use refactor::transaction::Transaction;
+
+use std::ffi::CStr;
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -529,4 +534,19 @@ impl<'a, T> DatabaseSnapshotting for &'a mut T where T: DatabaseSnapshotting {
 
 pub trait DatabaseCheckpoints {
     fn checkpoint_object(&self) -> Result<Checkpoint, Error>;
+}
+
+///////////////////////////////////////////////////////////////////////////////////////////////////
+
+// FIXME keep this trait?
+pub trait DatabaseBackups {
+    // FIXME not threadsafe as noted in rocksdb
+    fn create_backup(&self, backup_engine: &BackupEngine) -> Result<(), Error>;
+
+    // FIXME not threadsafe as noted in rocksdb
+    fn create_backup_with_metadata(
+        &self,
+        backup_engine: &BackupEngine,
+        metadata: &CStr
+    ) -> Result<(), Error>;
 }
