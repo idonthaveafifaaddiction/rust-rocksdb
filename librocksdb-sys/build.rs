@@ -102,6 +102,7 @@ fn bindgen_rocksdb(rocksdb_lib_info: Option<pkg_config::Library>) {
     // FIXME recursively include all the rocksdb files if we are building rocksdb ourselves.
     println!("cargo:rerun-if-changed=rocksdb/include/rocksdb/c.h");
     println!("cargo:rerun-if-changed=rocksdb/db/c.cc");
+    println!("cargo:rerun-if-changed=rocksdb/utilities/backupable/backupable_db.cc");
 
     let bindings = include_paths
         .iter()
