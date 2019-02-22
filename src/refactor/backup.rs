@@ -146,8 +146,13 @@ impl BackupEngine {
     ) -> Result<BackupEngine, Error> {
         let cpath = pathref_to_cstring(path.as_ref())?;
 
+        let share_table_files = false;
         let inner = unsafe {
-            try_ffi!(ffi::rocksdb_backup_engine_open(opts.inner, cpath.as_ptr()))
+            try_ffi!(ffi::rocksdb_backup_engine_open(
+                opts.inner,
+                cpath.as_ptr(),
+                share_table_files as c_int
+            ))
         };
 
         if inner.is_null() {
@@ -163,8 +168,13 @@ impl BackupEngine {
 
     // FIXME not threadsafe as noted in rocksdb
     pub(crate) fn create_new_backup_from_db(&self, db: *mut ffi::rocksdb_t) -> Result<(), Error> {
+        let flush_before_backup = true;
         unsafe {
-            try_ffi!(ffi::rocksdb_backup_engine_create_new_backup(self.inner, db))
+            try_ffi!(ffi::rocksdb_backup_engine_create_new_backup(
+                self.inner,
+                db,
+                flush_before_backup as c_int
+            ))
         };
         Ok(())
     }
@@ -175,11 +185,13 @@ impl BackupEngine {
         db: *mut ffi::rocksdb_t,
         app_metadata: &CStr
     ) -> Result<(), Error> {
+        let flush_before_backup = true;
         unsafe {
             try_ffi!(ffi::rocksdb_backup_engine_create_new_backup_with_metadata(
                 self.inner,
                 db,
-                app_metadata.as_ptr()
+                app_metadata.as_ptr(),
+                flush_before_backup as c_int
             ))
         };
         Ok(())
@@ -226,9 +238,6 @@ impl BackupEngine {
         backup_id: u32,
         restore_options: &RestoreOptions
     ) -> Result<(), Error> {
-        // FIXME
-        eprintln!("db_dir bytes: {:#?}", pathref_to_cstring(&db_dir).unwrap());
-
         // FIXME Assumption is made here that the WAL dir is the same as the DB dir, which is the
         // default unless the DB is opened with options that have the WAL dir set to something else.
         let db_dir = pathref_to_cstring(&db_dir)?;
@@ -274,14 +283,14 @@ impl BackupEngine {
     ) -> Result<(), Error> {
         // FIXME Assumption is made here that the WAL dir is the same as the DB dir, which is the
         // default unless the DB is opened with options that have the WAL dir set to something else.
-        let db_dir = pathref_to_cstring(&db_dir)?.as_ptr();
-        let wal_dir = db_dir;
+        let db_dir = pathref_to_cstring(&db_dir)?;
+        let wal_dir = &db_dir;
 
         unsafe {
             try_ffi!(ffi::rocksdb_backup_engine_restore_db_from_latest_backup(
                 self.inner,
-                db_dir,
-                wal_dir,
+                db_dir.as_ptr() as *const _,
+                wal_dir.as_ptr() as *const _,
                 restore_options.inner
             ))
         };
