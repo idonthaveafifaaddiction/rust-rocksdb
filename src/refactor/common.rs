@@ -156,6 +156,7 @@ unsafe impl Send for ColumnFamily {}
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 /// A description of the RocksDB column family, containing the name and `Options`.
+#[derive(Debug)]
 pub struct ColumnFamilyDescriptor {
     pub(crate) name: String,
     pub(crate) options: Options

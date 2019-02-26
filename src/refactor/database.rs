@@ -49,6 +49,7 @@ use refactor::{
         DatabaseBackups,
         DatabaseCheckpoints,
         DatabaseIteration,
+        DatabaseMetaOperations,
         DatabaseReadNoOptOperations,
         DatabaseReadOptOperations,
         DatabaseTransactions,
@@ -108,6 +109,8 @@ impl DBTool {
         Ok(())
     }
 
+    // FIXME FIXME FIXME this is broken because cfnames pointers become invalid when function
+    // returns
     pub(crate) fn prepare_open_column_family_args(
         cfs: Vec<ColumnFamilyDescriptor>
     ) -> (
@@ -212,6 +215,7 @@ pub enum DBRecoveryMode {
 ///    DB::open(&opts, path).unwrap()
 /// }
 /// ```
+#[derive(Debug)]
 pub struct Options {
     pub(crate) inner: *mut ffi::rocksdb_options_t // FIXME
 }
@@ -248,6 +252,16 @@ impl Options {
     pub fn create_if_missing(self, create_if_missing: bool) -> Self {
         unsafe {
             ffi::rocksdb_options_set_create_if_missing(self.inner, create_if_missing as c_uchar);
+        }
+        self
+    }
+
+    pub fn create_missing_column_families(self, create_missing_column_families: bool) -> Self {
+        unsafe {
+            ffi::rocksdb_options_set_create_missing_column_families(
+                self.inner,
+                create_missing_column_families as c_uchar
+            );
         }
         self
     }
@@ -298,7 +312,7 @@ impl Drop for InnerDB {
 
 pub struct DB {
     inner: Arc<InnerDB>,
-    cfs: BTreeMap<String, ColumnFamily>,  // FIXME where is this used?
+    cfs: BTreeMap<String, ColumnFamily>,
     path: PathBuf
 
 }
@@ -396,6 +410,44 @@ impl DB {
             cfs: cf_map,
             path: path.to_path_buf(),
         })
+    }
+}
+
+impl DatabaseMetaOperations for DB {
+    fn drop_cf(&mut self, cf_name: &str) -> Result<(), Error> {
+        {
+            let cf_handle = self.get_cf_handle(cf_name)?;
+            unsafe {
+                try_ffi!(ffi::rocksdb_drop_column_family(self.inner.inner, cf_handle.inner))
+            }
+        }
+        self.cfs.remove(cf_name);
+        Ok(())
+    }
+
+    fn create_cf_opt(&mut self, cf_name: &str, opts: &Options) -> Result<ColumnFamily, Error> {
+        if self.cfs.contains_key(cf_name) {
+            return Err(Error::new(format!("Column family \"{}\" already exists", cf_name)));
+        }
+
+        let inner = unsafe {
+            try_ffi!(ffi::rocksdb_create_column_family(
+                self.inner.inner,
+                opts.inner,
+                CString::new(cf_name.as_bytes()).unwrap().as_ptr() // FIXME no unwrap
+            ))
+        };
+        let column_family = ColumnFamily { inner };
+
+        self.cfs.insert(cf_name.into(), column_family);
+        self.get_cf_handle(cf_name)
+    }
+
+    fn get_cf_handle(&self, cf_name: &str) -> Result<ColumnFamily, Error> {
+        match self.cfs.get(cf_name) {
+            Some(cf_handle) => Ok(*cf_handle),
+            None => Err(Error::new(format!("No such column family {}", cf_name)))
+        }
     }
 }
 
@@ -676,9 +728,9 @@ impl OptimisticTransactionDB {
 
         let (db, cf_map) = if cfs.len() == 0 {
             let db = unsafe {
-                ffi_try!(ffi::rocksdb_optimistictransactiondb_open(
+                try_ffi!(ffi::rocksdb_optimistictransactiondb_open(
                     opts.inner,
-                    cpath.as_ptr() as *const _,
+                    cpath.as_ptr() as *const _
                 ))
             };
             if db.is_null() {
@@ -687,19 +739,49 @@ impl OptimisticTransactionDB {
 
             (db, BTreeMap::new())
         } else {
-            let (cfs_v, mut cfnames, mut cfopts, mut cfhandles) =
-                DBTool::prepare_open_column_family_args(cfs);
+            // FIXME duplicated code
+
+            let mut cfs_v = cfs;
+            // Always open the default column family.
+            if !cfs_v.iter().any(|cf| cf.name == "default") {
+                cfs_v.push(ColumnFamilyDescriptor {
+                    name: String::from("default"),
+                    options: Options::default()
+                });
+            }
+            // We need to store our CStrings in an intermediate vector
+            // so that their pointers remain valid.
+            let c_cfs: Vec<CString> = cfs_v
+                .iter()
+                .map(|cf| CString::new(cf.name.as_bytes()).unwrap())
+                .collect();
+
+            let mut cfnames: Vec<*const c_char> = c_cfs
+                .iter()
+                .map(|cf| cf.as_ptr())
+                .collect();
+
+            // These handles will be populated by DB.
+            let mut cfhandles: Vec<*mut ffi::rocksdb_column_family_handle_t> = cfs_v
+                .iter()
+                .map(|_| ptr::null_mut())
+                .collect();
+
+            let mut cfopts: Vec<*const ffi::rocksdb_options_t> = cfs_v.iter()
+                .map(|cf| cf.options.inner as *const _)
+                .collect();
 
             let db = unsafe {
-                ffi_try!(ffi::rocksdb_optimistictransactiondb_open_column_families(
+                try_ffi!(ffi::rocksdb_optimistictransactiondb_open_column_families(
                     opts.inner,
                     cpath.as_ptr(),
                     cfs_v.len() as c_int,
                     cfnames.as_mut_ptr(),
                     cfopts.as_mut_ptr(),
-                    cfhandles.as_mut_ptr(),
+                    cfhandles.as_mut_ptr()
                 ))
             };
+
             if db.is_null() {
                 return Err(Error::new("Failed to open database".into()));
             }
@@ -757,6 +839,20 @@ impl OptimisticTransactionDB {
             inner: txn,
             db: InnerDbType::DB(self.base_db.inner.clone())
         }
+    }
+}
+
+impl DatabaseMetaOperations for OptimisticTransactionDB {
+    fn drop_cf(&mut self, cf_name: &str) -> Result<(), Error> {
+        self.base_db.drop_cf(cf_name)
+    }
+
+    fn create_cf_opt(&mut self, cf_name: &str, opts: &Options) -> Result<ColumnFamily, Error> {
+        self.base_db.create_cf_opt(cf_name, opts)
+    }
+
+    fn get_cf_handle(&self, cf_name: &str) -> Result<ColumnFamily, Error> {
+        self.base_db.get_cf_handle(cf_name)
     }
 }
 
@@ -1006,12 +1102,13 @@ impl Drop for InnerTransactionDB {
 
 pub struct TransactionDB {
     inner: Arc<InnerTransactionDB>,
+    cfs: BTreeMap<String, ColumnFamily>,
     path: PathBuf
 }
 
 unsafe impl Send for TransactionDB {} // FIXME is this okay?
 
-// FIXME implement
+// FIXME implement, add full support for column family stuff in ffi
 impl TransactionDB {
     pub fn path(&self) -> &Path {
         self.path.as_path()
@@ -1039,6 +1136,7 @@ impl TransactionDB {
 
         Ok(Self {
             inner: Arc::new(InnerTransactionDB::open(&opts, &txndb_opts, &cpath)?),
+            cfs: Default::default(), // FIXME not supported in ffi right now...
             path: path.to_path_buf()
         })
     }
@@ -1063,6 +1161,48 @@ impl TransactionDB {
         Transaction {
             inner: txn,
             db: InnerDbType::TxnDB(self.inner.clone())
+        }
+    }
+}
+
+impl DatabaseMetaOperations for TransactionDB {
+    fn drop_cf(&mut self, _cf_name: &str) -> Result<(), Error> {
+        unimplemented!() // FIXME not supported in ffi right now...
+        // {
+        //     let cf_handle = self.get_cf_handle(cf_name)?;
+        //     unsafe {
+        //         try_ffi!(ffi::rocksdb_transactiondb_drop_column_family(
+        //             self.inner.inner,
+        //             cf_handle.inner
+        //         ))
+        //     }
+        // }
+        // self.cfs.remove(cf_name);
+        // Ok(())
+    }
+
+    fn create_cf_opt(&mut self, cf_name: &str, opts: &Options) -> Result<ColumnFamily, Error> {
+        if self.cfs.contains_key(cf_name) {
+            return Err(Error::new(format!("Column family \"{}\" already exists", cf_name)));
+        }
+
+        let inner = unsafe {
+            try_ffi!(ffi::rocksdb_transactiondb_create_column_family(
+                self.inner.inner,
+                opts.inner,
+                CString::new(cf_name.as_bytes()).unwrap().as_ptr() // FIXME no unwrap
+            ))
+        };
+        let column_family = ColumnFamily { inner };
+
+        self.cfs.insert(cf_name.into(), column_family);
+        self.get_cf_handle(cf_name)
+    }
+
+    fn get_cf_handle(&self, cf_name: &str) -> Result<ColumnFamily, Error> {
+        match self.cfs.get(cf_name) {
+            Some(cf_handle) => Ok(*cf_handle),
+            None => Err(Error::new(format!("No such column family {}", cf_name)))
         }
     }
 }

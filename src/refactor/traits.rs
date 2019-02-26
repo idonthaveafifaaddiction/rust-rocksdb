@@ -29,6 +29,7 @@ use refactor::{
         Snapshot,
         WriteOptions
     },
+    database::Options,
     transaction::Transaction
 };
 
@@ -36,15 +37,19 @@ use std::ffi::CStr;
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
-// pub trait DatabaseMetaOperations {
+pub trait DatabaseMetaOperations {
     // FIXME implement, maybe these should go in DatabaseBatchOperations trait
     // fn write(&self, batch: WriteBatch) -> Result<(), Error>;
     // fn write_opt(&self, batch: WriteBatch, writeopts: &WriteOptions) -> Result<(), Error>;
     // fn compact_range(&self, start: Option<&[u8]>, end: Option<&[u8]>);
     // fn compact_range_cf(&self, cf: ColumnFamily, start: Option<&[u8]>, end: Option<&[u8]>);
-    // fn drop_cf(&mut self, name: &str) -> Result<(), Error>;
-    // fn create_cf(&mut self, name: &str, opts: &Options) -> Result<ColumnFamily, Error>;
-// }
+    fn drop_cf(&mut self, cf_name: &str) -> Result<(), Error>;
+    fn create_cf(&mut self, cf_name: &str) -> Result<ColumnFamily, Error> {
+        self.create_cf_opt(cf_name, &Options::default())
+    }
+    fn create_cf_opt(&mut self, cf_name: &str, opts: &Options) -> Result<ColumnFamily, Error>;
+    fn get_cf_handle(&self, cf_name: &str) -> Result<ColumnFamily, Error>;
+}
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -413,6 +418,19 @@ pub trait ColumnFamilyIteration {
 
     fn iter_cf_prefix<'p>(&self, cf_handle: ColumnFamily, prefix: &'p [u8]) -> DatabaseIterator {
         let mut readopts = ReadOptions::default();
+        readopts.set_prefix_same_as_start(true);
+        DatabaseIterator::from_raw(
+            self.iter_cf_raw_opt(cf_handle, &readopts),
+            DatabaseIteratorMode::From(prefix, DatabaseIteratorDirection::Forward)
+        )
+    }
+
+    fn iter_cf_prefix_opt<'p>(
+        &self,
+        cf_handle: ColumnFamily,
+        prefix: &'p [u8],
+        readopts: &mut ReadOptions // FIXME kinda gross that this is mut
+    ) -> DatabaseIterator {
         readopts.set_prefix_same_as_start(true);
         DatabaseIterator::from_raw(
             self.iter_cf_raw_opt(cf_handle, &readopts),
