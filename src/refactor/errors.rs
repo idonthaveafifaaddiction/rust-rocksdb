@@ -35,6 +35,12 @@ impl AsRef<str> for Error {
     }
 }
 
+impl Into<String> for Error {
+    fn into(self: Error) -> String {
+        self.message
+    }
+}
+
 // FIXME needed?
 // impl From<Error> for String {
 //     fn from(error: Error) -> Self {
