@@ -416,6 +416,16 @@ pub trait ColumnFamilyIteration {
         DatabaseIterator::from_raw(self.iter_cf_raw_opt(cf_handle, &readopts), mode)
     }
 
+    fn iter_cf_full_opt(
+        &self,
+        cf_handle: &ColumnFamily,
+        mode: DatabaseIteratorMode,
+        readopts: &mut ReadOptions
+    ) -> DatabaseIterator {
+        readopts.set_total_order_seek(true);
+        DatabaseIterator::from_raw(self.iter_cf_raw_opt(cf_handle, &readopts), mode)
+    }
+
     fn iter_cf_prefix<'p>(&self, cf_handle: &ColumnFamily, prefix: &'p [u8]) -> DatabaseIterator {
         let mut readopts = ReadOptions::default();
         readopts.set_prefix_same_as_start(true);
