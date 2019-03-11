@@ -23,6 +23,7 @@ use std::{
     fs,
     path::{Path, PathBuf},
     ptr,
+    mem,
     sync::Arc,
     slice
 };
@@ -311,10 +312,9 @@ impl Drop for InnerDB {
 }
 
 pub struct DB {
-    inner: Arc<InnerDB>,
     cfs: BTreeMap<String, ColumnFamily>,
+    inner: Arc<InnerDB>,
     path: PathBuf
-
 }
 
 unsafe impl Send for DB {} // FIXME is this okay?
@@ -425,7 +425,7 @@ impl DatabaseMetaOperations for DB {
         Ok(())
     }
 
-    fn create_cf_opt(&mut self, cf_name: &str, opts: &Options) -> Result<ColumnFamily, Error> {
+    fn create_cf_opt(&mut self, cf_name: &str, opts: &Options) -> Result<&ColumnFamily, Error> {
         if self.cfs.contains_key(cf_name) {
             return Err(Error::new(format!("Column family \"{}\" already exists", cf_name)));
         }
@@ -443,9 +443,9 @@ impl DatabaseMetaOperations for DB {
         self.get_cf_handle(cf_name)
     }
 
-    fn get_cf_handle(&self, cf_name: &str) -> Result<ColumnFamily, Error> {
+    fn get_cf_handle(&self, cf_name: &str) -> Result<&ColumnFamily, Error> {
         match self.cfs.get(cf_name) {
-            Some(cf_handle) => Ok(*cf_handle),
+            Some(cf_handle) => Ok(cf_handle),
             None => Err(Error::new(format!("No such column family {}", cf_name)))
         }
     }
@@ -457,7 +457,7 @@ impl DatabaseReadNoOptOperations for DB {
         self.get_opt(key, &readopts)
     }
 
-    fn get_cf(&self, cf_handle: ColumnFamily, key: &[u8]) -> Result<Option<DatabaseVector>, Error> {
+    fn get_cf(&self, cf_handle: &ColumnFamily, key: &[u8]) -> Result<Option<DatabaseVector>, Error> {
         let readopts = ReadOptions::default();
         self.get_cf_opt(cf_handle, key, &readopts)
     }
@@ -469,7 +469,7 @@ impl DatabaseWriteNoOptOperations for DB {
         self.put_opt(key, value, &writeopts)
     }
 
-    fn put_cf(&self, cf_handle: ColumnFamily, key: &[u8], value: &[u8]) -> Result<(), Error> {
+    fn put_cf(&self, cf_handle: &ColumnFamily, key: &[u8], value: &[u8]) -> Result<(), Error> {
         let writeopts = WriteOptions::default();
         self.put_cf_opt(cf_handle, key, value, &writeopts)
     }
@@ -484,7 +484,7 @@ impl DatabaseWriteNoOptOperations for DB {
         self.delete_opt(key, &writeopts)
     }
 
-    fn delete_cf(&self, cf_handle: ColumnFamily, key: &[u8]) -> Result<(), Error> {
+    fn delete_cf(&self, cf_handle: &ColumnFamily, key: &[u8]) -> Result<(), Error> {
         let writeopts = WriteOptions::default();
         self.delete_cf_opt(cf_handle, key, &writeopts)
     }
@@ -507,7 +507,7 @@ impl DatabaseReadOptOperations for DB {
 
     fn get_cf_opt(
         &self,
-        cf_handle: ColumnFamily,
+        cf_handle: &ColumnFamily,
         key: &[u8],
         readopts: &ReadOptions,
     ) -> Result<Option<DatabaseVector>, Error> {
@@ -543,7 +543,7 @@ impl DatabaseWriteOptOperations for DB {
 
     fn put_cf_opt(
         &self,
-        cf_handle: ColumnFamily,
+        cf_handle: &ColumnFamily,
         key: &[u8],
         value: &[u8],
         writeopts: &WriteOptions,
@@ -595,7 +595,7 @@ impl DatabaseWriteOptOperations for DB {
 
     fn delete_cf_opt(
         &self,
-        cf_handle: ColumnFamily,
+        cf_handle: &ColumnFamily,
         key: &[u8],
         writeopts: &WriteOptions,
     ) -> Result<(), Error> {
@@ -615,7 +615,7 @@ impl DatabaseWriteOptOperations for DB {
 impl ColumnFamilyMergeOperations for DB {
     fn merge_cf_opt(
         &self,
-        cf_handle: ColumnFamily,
+        cf_handle: &ColumnFamily,
         key: &[u8],
         value: &[u8],
         writeopts: &WriteOptions,
@@ -644,7 +644,7 @@ impl DatabaseIteration for DB {
 impl ColumnFamilyIteration for DB {
     fn iter_cf_raw_opt(
         &self,
-        cf_handle: ColumnFamily,
+        cf_handle: &ColumnFamily,
         readopts: &ReadOptions
     ) -> RawDatabaseIterator {
         RawDatabaseIterator::from_db_cf(self.inner.clone(), cf_handle, &readopts)
@@ -847,17 +847,32 @@ impl DatabaseMetaOperations for OptimisticTransactionDB {
         self.base_db.drop_cf(cf_name)
     }
 
-    fn create_cf_opt(&mut self, cf_name: &str, opts: &Options) -> Result<ColumnFamily, Error> {
+    fn create_cf_opt(&mut self, cf_name: &str, opts: &Options) -> Result<&ColumnFamily, Error> {
         self.base_db.create_cf_opt(cf_name, opts)
     }
 
-    fn get_cf_handle(&self, cf_name: &str) -> Result<ColumnFamily, Error> {
+    fn get_cf_handle(&self, cf_name: &str) -> Result<&ColumnFamily, Error> {
         self.base_db.get_cf_handle(cf_name)
     }
 }
 
+unsafe extern "C" fn noop_drop_fn(_: *mut ffi::rocksdb_t) {}
+
 impl Drop for OptimisticTransactionDB {
     fn drop(&mut self) {
+        // XXX(ssloboda) we need to drop the base DB (and it's column families) before we drop
+        // this. Really we should structure the code better so this hack isn't necessary.
+        let dummy = DB {
+            cfs: Default::default(),
+            inner: Arc::new(InnerDB {
+                inner: ptr::null_mut(),
+                drop_fn: noop_drop_fn
+            }),
+            path: Default::default()
+        };
+        let base_db = mem::replace(&mut self.base_db, dummy);
+        drop(base_db);
+
         unsafe {
             ffi::rocksdb_optimistictransactiondb_close(self.inner)
         }
@@ -869,7 +884,7 @@ impl DatabaseReadNoOptOperations for OptimisticTransactionDB {
         self.base_db.get(key)
     }
 
-    fn get_cf(&self, cf_handle: ColumnFamily, key: &[u8]) -> Result<Option<DatabaseVector>, Error> {
+    fn get_cf(&self, cf_handle: &ColumnFamily, key: &[u8]) -> Result<Option<DatabaseVector>, Error> {
         self.base_db.get_cf(cf_handle, key)
     }
 }
@@ -879,7 +894,7 @@ impl DatabaseWriteNoOptOperations for OptimisticTransactionDB {
         self.base_db.put(key, value)
     }
 
-    fn put_cf(&self, cf_handle: ColumnFamily, key: &[u8], value: &[u8]) -> Result<(), Error> {
+    fn put_cf(&self, cf_handle: &ColumnFamily, key: &[u8], value: &[u8]) -> Result<(), Error> {
         self.base_db.put_cf(cf_handle, key, value)
     }
 
@@ -891,7 +906,7 @@ impl DatabaseWriteNoOptOperations for OptimisticTransactionDB {
         self.base_db.delete(key)
     }
 
-    fn delete_cf(&self, cf_handle: ColumnFamily, key: &[u8]) -> Result<(), Error> {
+    fn delete_cf(&self, cf_handle: &ColumnFamily, key: &[u8]) -> Result<(), Error> {
         self.base_db.delete_cf(cf_handle, key)
     }
 }
@@ -903,7 +918,7 @@ impl DatabaseReadOptOperations for OptimisticTransactionDB {
 
     fn get_cf_opt(
         &self,
-        cf_handle: ColumnFamily,
+        cf_handle: &ColumnFamily,
         key: &[u8],
         readopts: &ReadOptions,
     ) -> Result<Option<DatabaseVector>, Error> {
@@ -918,7 +933,7 @@ impl DatabaseWriteOptOperations for OptimisticTransactionDB {
 
     fn put_cf_opt(
         &self,
-        cf_handle: ColumnFamily,
+        cf_handle: &ColumnFamily,
         key: &[u8],
         value: &[u8],
         writeopts: &WriteOptions,
@@ -941,7 +956,7 @@ impl DatabaseWriteOptOperations for OptimisticTransactionDB {
 
     fn delete_cf_opt(
         &self,
-        cf_handle: ColumnFamily,
+        cf_handle: &ColumnFamily,
         key: &[u8],
         writeopts: &WriteOptions,
     ) -> Result<(), Error> {
@@ -952,7 +967,7 @@ impl DatabaseWriteOptOperations for OptimisticTransactionDB {
 impl ColumnFamilyMergeOperations for OptimisticTransactionDB {
     fn merge_cf_opt(
         &self,
-        cf_handle: ColumnFamily,
+        cf_handle: &ColumnFamily,
         key: &[u8],
         value: &[u8],
         writeopts: &WriteOptions,
@@ -970,7 +985,7 @@ impl DatabaseIteration for OptimisticTransactionDB {
 impl ColumnFamilyIteration for OptimisticTransactionDB {
     fn iter_cf_raw_opt(
         &self,
-        cf_handle: ColumnFamily,
+        cf_handle: &ColumnFamily,
         readopts: &ReadOptions
     ) -> RawDatabaseIterator {
         self.base_db.iter_cf_raw_opt(cf_handle, readopts)
@@ -1101,8 +1116,8 @@ impl Drop for InnerTransactionDB {
 }
 
 pub struct TransactionDB {
-    inner: Arc<InnerTransactionDB>,
     cfs: BTreeMap<String, ColumnFamily>,
+    inner: Arc<InnerTransactionDB>,
     path: PathBuf
 }
 
@@ -1181,7 +1196,7 @@ impl DatabaseMetaOperations for TransactionDB {
         // Ok(())
     }
 
-    fn create_cf_opt(&mut self, cf_name: &str, opts: &Options) -> Result<ColumnFamily, Error> {
+    fn create_cf_opt(&mut self, cf_name: &str, opts: &Options) -> Result<&ColumnFamily, Error> {
         if self.cfs.contains_key(cf_name) {
             return Err(Error::new(format!("Column family \"{}\" already exists", cf_name)));
         }
@@ -1199,9 +1214,9 @@ impl DatabaseMetaOperations for TransactionDB {
         self.get_cf_handle(cf_name)
     }
 
-    fn get_cf_handle(&self, cf_name: &str) -> Result<ColumnFamily, Error> {
+    fn get_cf_handle(&self, cf_name: &str) -> Result<&ColumnFamily, Error> {
         match self.cfs.get(cf_name) {
-            Some(cf_handle) => Ok(*cf_handle),
+            Some(cf_handle) => Ok(cf_handle),
             None => Err(Error::new(format!("No such column family {}", cf_name)))
         }
     }
@@ -1213,7 +1228,7 @@ impl DatabaseReadNoOptOperations for TransactionDB {
         self.get_opt(key, &readopts)
     }
 
-    fn get_cf(&self, cf_handle: ColumnFamily, key: &[u8]) -> Result<Option<DatabaseVector>, Error> {
+    fn get_cf(&self, cf_handle: &ColumnFamily, key: &[u8]) -> Result<Option<DatabaseVector>, Error> {
         let readopts = ReadOptions::default();
         self.get_cf_opt(cf_handle, key, &readopts)
     }
@@ -1225,7 +1240,7 @@ impl DatabaseWriteNoOptOperations for TransactionDB {
         self.put_opt(key, value, &writeopts)
     }
 
-    fn put_cf(&self, cf_handle: ColumnFamily, key: &[u8], value: &[u8]) -> Result<(), Error> {
+    fn put_cf(&self, cf_handle: &ColumnFamily, key: &[u8], value: &[u8]) -> Result<(), Error> {
         let writeopts = WriteOptions::default();
         self.put_cf_opt(cf_handle, key, value, &writeopts)
     }
@@ -1240,7 +1255,7 @@ impl DatabaseWriteNoOptOperations for TransactionDB {
         self.delete_opt(key, &writeopts)
     }
 
-    fn delete_cf(&self, cf_handle: ColumnFamily, key: &[u8]) -> Result<(), Error> {
+    fn delete_cf(&self, cf_handle: &ColumnFamily, key: &[u8]) -> Result<(), Error> {
         let writeopts = WriteOptions::default();
         self.delete_cf_opt(cf_handle, key, &writeopts)
     }
@@ -1263,7 +1278,7 @@ impl DatabaseReadOptOperations for TransactionDB {
 
     fn get_cf_opt(
         &self,
-        cf_handle: ColumnFamily,
+        cf_handle: &ColumnFamily,
         key: &[u8],
         readopts: &ReadOptions,
     ) -> Result<Option<DatabaseVector>, Error> {
@@ -1299,7 +1314,7 @@ impl DatabaseWriteOptOperations for TransactionDB {
 
     fn put_cf_opt(
         &self,
-        cf_handle: ColumnFamily,
+        cf_handle: &ColumnFamily,
         key: &[u8],
         value: &[u8],
         writeopts: &WriteOptions,
@@ -1351,7 +1366,7 @@ impl DatabaseWriteOptOperations for TransactionDB {
 
     fn delete_cf_opt(
         &self,
-        cf_handle: ColumnFamily,
+        cf_handle: &ColumnFamily,
         key: &[u8],
         writeopts: &WriteOptions,
     ) -> Result<(), Error> {

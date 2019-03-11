@@ -145,13 +145,20 @@ impl WriteOptions {
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
-#[derive(Copy, Clone)]  // XXX(ssloboda) why was this needed?
 pub struct ColumnFamily {
     pub(crate) inner: *mut ffi::rocksdb_column_family_handle_t
 }
 
 // XXX(ssloboda) why was this deemed okay?
 unsafe impl Send for ColumnFamily {}
+
+impl Drop for ColumnFamily {
+    fn drop(&mut self) {
+        unsafe {
+            ffi::rocksdb_column_family_handle_destroy(self.inner)
+        }
+    }
+}
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
@@ -327,7 +334,7 @@ impl RawDatabaseIterator {
 
     pub(crate) fn from_db_cf(
         db: Arc<InnerDB>,
-        cf_handle: ColumnFamily,
+        cf_handle: &ColumnFamily,
         readopts: &ReadOptions,
     ) -> Self {
         let inner = unsafe {

@@ -44,11 +44,11 @@ pub trait DatabaseMetaOperations {
     // fn compact_range(&self, start: Option<&[u8]>, end: Option<&[u8]>);
     // fn compact_range_cf(&self, cf: ColumnFamily, start: Option<&[u8]>, end: Option<&[u8]>);
     fn drop_cf(&mut self, cf_name: &str) -> Result<(), Error>;
-    fn create_cf(&mut self, cf_name: &str) -> Result<ColumnFamily, Error> {
+    fn create_cf(&mut self, cf_name: &str) -> Result<&ColumnFamily, Error> {
         self.create_cf_opt(cf_name, &Options::default())
     }
-    fn create_cf_opt(&mut self, cf_name: &str, opts: &Options) -> Result<ColumnFamily, Error>;
-    fn get_cf_handle(&self, cf_name: &str) -> Result<ColumnFamily, Error>;
+    fn create_cf_opt(&mut self, cf_name: &str, opts: &Options) -> Result<&ColumnFamily, Error>;
+    fn get_cf_handle(&self, cf_name: &str) -> Result<&ColumnFamily, Error>;
 }
 
 ///////////////////////////////////////////////////////////////////////////////////////////////////
@@ -77,7 +77,7 @@ impl<T> DatabaseReadOperations for T
 pub trait DatabaseReadNoOptOperations {
     fn get(&self, key: &[u8]) -> Result<Option<DatabaseVector>, Error>;
 
-    fn get_cf(&self, cf_handle: ColumnFamily, key: &[u8]) -> Result<Option<DatabaseVector>, Error>;
+    fn get_cf(&self, cf_handle: &ColumnFamily, key: &[u8]) -> Result<Option<DatabaseVector>, Error>;
 }
 
 impl<'a, T> DatabaseReadNoOptOperations for &'a T where T: DatabaseReadNoOptOperations {
@@ -85,7 +85,7 @@ impl<'a, T> DatabaseReadNoOptOperations for &'a T where T: DatabaseReadNoOptOper
         (**self).get(&key)
     }
 
-    fn get_cf(&self, cf_handle: ColumnFamily, key: &[u8]) -> Result<Option<DatabaseVector>, Error> {
+    fn get_cf(&self, cf_handle: &ColumnFamily, key: &[u8]) -> Result<Option<DatabaseVector>, Error> {
         (**self).get_cf(cf_handle, &key)
     }
 }
@@ -95,7 +95,7 @@ impl<'a, T> DatabaseReadNoOptOperations for &'a mut T where T: DatabaseReadNoOpt
         (**self).get(&key)
     }
 
-    fn get_cf(&self, cf_handle: ColumnFamily, key: &[u8]) -> Result<Option<DatabaseVector>, Error> {
+    fn get_cf(&self, cf_handle: &ColumnFamily, key: &[u8]) -> Result<Option<DatabaseVector>, Error> {
         (**self).get_cf(cf_handle, &key)
     }
 }
@@ -105,7 +105,7 @@ pub trait DatabaseReadOptOperations {
 
     fn get_cf_opt(
         &self,
-        cf_handle: ColumnFamily,
+        cf_handle: &ColumnFamily,
         key: &[u8],
         readopts: &ReadOptions,
     ) -> Result<Option<DatabaseVector>, Error>;
@@ -118,7 +118,7 @@ impl<'a, T> DatabaseReadOptOperations for &'a T where T: DatabaseReadOptOperatio
 
     fn get_cf_opt(
         &self,
-        cf_handle: ColumnFamily,
+        cf_handle: &ColumnFamily,
         key: &[u8],
         readopts: &ReadOptions,
     ) -> Result<Option<DatabaseVector>, Error> {
@@ -133,7 +133,7 @@ impl<'a, T> DatabaseReadOptOperations for &'a mut T where T: DatabaseReadOptOper
 
     fn get_cf_opt(
         &self,
-        cf_handle: ColumnFamily,
+        cf_handle: &ColumnFamily,
         key: &[u8],
         readopts: &ReadOptions,
     ) -> Result<Option<DatabaseVector>, Error> {
@@ -156,13 +156,13 @@ impl<T> DatabaseWriteOperations for T
 pub trait DatabaseWriteNoOptOperations {
     fn put(&self, key: &[u8], value: &[u8]) -> Result<(), Error>;
 
-    fn put_cf(&self, cf_handle: ColumnFamily, key: &[u8], value: &[u8]) -> Result<(), Error>;
+    fn put_cf(&self, cf_handle: &ColumnFamily, key: &[u8], value: &[u8]) -> Result<(), Error>;
 
     fn merge(&self, key: &[u8], value: &[u8]) -> Result<(), Error>;
 
     fn delete(&self, key: &[u8]) -> Result<(), Error>;
 
-    fn delete_cf(&self, cf_handle: ColumnFamily, key: &[u8]) -> Result<(), Error>;
+    fn delete_cf(&self, cf_handle: &ColumnFamily, key: &[u8]) -> Result<(), Error>;
 }
 
 impl<'a, T> DatabaseWriteNoOptOperations for &'a T where T: DatabaseWriteNoOptOperations {
@@ -170,7 +170,7 @@ impl<'a, T> DatabaseWriteNoOptOperations for &'a T where T: DatabaseWriteNoOptOp
         (**self).put(&key, &value)
     }
 
-    fn put_cf(&self, cf_handle: ColumnFamily, key: &[u8], value: &[u8]) -> Result<(), Error> {
+    fn put_cf(&self, cf_handle: &ColumnFamily, key: &[u8], value: &[u8]) -> Result<(), Error> {
         (**self).put_cf(cf_handle, &key, &value)
     }
 
@@ -182,7 +182,7 @@ impl<'a, T> DatabaseWriteNoOptOperations for &'a T where T: DatabaseWriteNoOptOp
         (**self).delete(&key)
     }
 
-    fn delete_cf(&self, cf_handle: ColumnFamily, key: &[u8]) -> Result<(), Error> {
+    fn delete_cf(&self, cf_handle: &ColumnFamily, key: &[u8]) -> Result<(), Error> {
         (**self).delete_cf(cf_handle, &key)
     }
 }
@@ -192,7 +192,7 @@ impl<'a, T> DatabaseWriteNoOptOperations for &'a mut T where T: DatabaseWriteNoO
         (**self).put(&key, &value)
     }
 
-    fn put_cf(&self, cf_handle: ColumnFamily, key: &[u8], value: &[u8]) -> Result<(), Error> {
+    fn put_cf(&self, cf_handle: &ColumnFamily, key: &[u8], value: &[u8]) -> Result<(), Error> {
         (**self).put_cf(cf_handle, &key, &value)
     }
 
@@ -204,7 +204,7 @@ impl<'a, T> DatabaseWriteNoOptOperations for &'a mut T where T: DatabaseWriteNoO
         (**self).delete(&key)
     }
 
-    fn delete_cf(&self, cf_handle: ColumnFamily, key: &[u8]) -> Result<(), Error> {
+    fn delete_cf(&self, cf_handle: &ColumnFamily, key: &[u8]) -> Result<(), Error> {
         (**self).delete_cf(cf_handle, &key)
     }
 }
@@ -214,7 +214,7 @@ pub trait DatabaseWriteOptOperations {
 
     fn put_cf_opt(
         &self,
-        cf_handle: ColumnFamily,
+        cf_handle: &ColumnFamily,
         key: &[u8],
         value: &[u8],
         writeopts: &WriteOptions,
@@ -231,7 +231,7 @@ pub trait DatabaseWriteOptOperations {
 
     fn delete_cf_opt(
         &self,
-        cf_handle: ColumnFamily,
+        cf_handle: &ColumnFamily,
         key: &[u8],
         writeopts: &WriteOptions,
     ) -> Result<(), Error>;
@@ -244,7 +244,7 @@ impl<'a, T> DatabaseWriteOptOperations for &'a T where T: DatabaseWriteOptOperat
 
     fn put_cf_opt(
         &self,
-        cf_handle: ColumnFamily,
+        cf_handle: &ColumnFamily,
         key: &[u8],
         value: &[u8],
         writeopts: &WriteOptions,
@@ -267,7 +267,7 @@ impl<'a, T> DatabaseWriteOptOperations for &'a T where T: DatabaseWriteOptOperat
 
     fn delete_cf_opt(
         &self,
-        cf_handle: ColumnFamily,
+        cf_handle: &ColumnFamily,
         key: &[u8],
         writeopts: &WriteOptions,
     ) -> Result<(), Error> {
@@ -282,7 +282,7 @@ impl<'a, T> DatabaseWriteOptOperations for &'a mut T where T: DatabaseWriteOptOp
 
     fn put_cf_opt(
         &self,
-        cf_handle: ColumnFamily,
+        cf_handle: &ColumnFamily,
         key: &[u8],
         value: &[u8],
         writeopts: &WriteOptions,
@@ -305,7 +305,7 @@ impl<'a, T> DatabaseWriteOptOperations for &'a mut T where T: DatabaseWriteOptOp
 
     fn delete_cf_opt(
         &self,
-        cf_handle: ColumnFamily,
+        cf_handle: &ColumnFamily,
         key: &[u8],
         writeopts: &WriteOptions,
     ) -> Result<(), Error> {
@@ -317,14 +317,14 @@ impl<'a, T> DatabaseWriteOptOperations for &'a mut T where T: DatabaseWriteOptOp
 
 // FIXME this trait is awkdward...
 pub trait ColumnFamilyMergeOperations {
-    fn merge_cf(&self, cf_handle: ColumnFamily, key: &[u8], value: &[u8]) -> Result<(), Error> {
+    fn merge_cf(&self, cf_handle: &ColumnFamily, key: &[u8], value: &[u8]) -> Result<(), Error> {
         let writeopts = WriteOptions::default();
         self.merge_cf_opt(cf_handle, key, value, &writeopts)
     }
 
     fn merge_cf_opt(
         &self,
-        cf_handle: ColumnFamily,
+        cf_handle: &ColumnFamily,
         key: &[u8],
         value: &[u8],
         writeopts: &WriteOptions,
@@ -391,24 +391,24 @@ impl<'a, T> DatabaseIteration for &'a mut T where T: DatabaseIteration {
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 pub trait ColumnFamilyIteration {
-    fn iter_cf_raw(&self, cf_handle: ColumnFamily) -> RawDatabaseIterator {
+    fn iter_cf_raw(&self, cf_handle: &ColumnFamily) -> RawDatabaseIterator {
         let readopts = ReadOptions::default();
         self.iter_cf_raw_opt(cf_handle, &readopts)
     }
 
     fn iter_cf_raw_opt(
         &self,
-        cf_handle: ColumnFamily,
+        cf_handle: &ColumnFamily,
         readopts: &ReadOptions
     ) -> RawDatabaseIterator;
 
-    fn iter_cf(&self, cf_handle: ColumnFamily, mode: DatabaseIteratorMode) -> DatabaseIterator {
+    fn iter_cf(&self, cf_handle: &ColumnFamily, mode: DatabaseIteratorMode) -> DatabaseIterator {
         DatabaseIterator::from_raw(self.iter_cf_raw(cf_handle), mode)
     }
 
     fn iter_cf_full(
         &self,
-        cf_handle: ColumnFamily,
+        cf_handle: &ColumnFamily,
         mode: DatabaseIteratorMode
     ) -> DatabaseIterator {
         let mut readopts = ReadOptions::default();
@@ -416,7 +416,7 @@ pub trait ColumnFamilyIteration {
         DatabaseIterator::from_raw(self.iter_cf_raw_opt(cf_handle, &readopts), mode)
     }
 
-    fn iter_cf_prefix<'p>(&self, cf_handle: ColumnFamily, prefix: &'p [u8]) -> DatabaseIterator {
+    fn iter_cf_prefix<'p>(&self, cf_handle: &ColumnFamily, prefix: &'p [u8]) -> DatabaseIterator {
         let mut readopts = ReadOptions::default();
         readopts.set_prefix_same_as_start(true);
         DatabaseIterator::from_raw(
@@ -427,7 +427,7 @@ pub trait ColumnFamilyIteration {
 
     fn iter_cf_prefix_opt<'p>(
         &self,
-        cf_handle: ColumnFamily,
+        cf_handle: &ColumnFamily,
         prefix: &'p [u8],
         readopts: &mut ReadOptions // FIXME kinda gross that this is mut
     ) -> DatabaseIterator {
@@ -440,61 +440,61 @@ pub trait ColumnFamilyIteration {
 }
 
 impl<'a, T> ColumnFamilyIteration for &'a T where T: ColumnFamilyIteration {
-    fn iter_cf_raw(&self, cf_handle: ColumnFamily) -> RawDatabaseIterator {
+    fn iter_cf_raw(&self, cf_handle: &ColumnFamily) -> RawDatabaseIterator {
         (**self).iter_cf_raw(cf_handle)
     }
 
     fn iter_cf_raw_opt(
         &self,
-        cf_handle: ColumnFamily,
+        cf_handle: &ColumnFamily,
         readopts: &ReadOptions
     ) -> RawDatabaseIterator {
         (**self).iter_cf_raw_opt(cf_handle, &readopts)
     }
 
-    fn iter_cf(&self, cf_handle: ColumnFamily, mode: DatabaseIteratorMode) -> DatabaseIterator {
+    fn iter_cf(&self, cf_handle: &ColumnFamily, mode: DatabaseIteratorMode) -> DatabaseIterator {
         (**self).iter_cf(cf_handle, mode)
     }
 
     fn iter_cf_full(
         &self,
-        cf_handle: ColumnFamily,
+        cf_handle: &ColumnFamily,
         mode: DatabaseIteratorMode
     ) -> DatabaseIterator {
         (**self).iter_cf_full(cf_handle, mode)
     }
 
-    fn iter_cf_prefix<'p>(&self, cf_handle: ColumnFamily, prefix: &'p [u8]) -> DatabaseIterator {
+    fn iter_cf_prefix<'p>(&self, cf_handle: &ColumnFamily, prefix: &'p [u8]) -> DatabaseIterator {
         (**self).iter_cf_prefix(cf_handle, &prefix)
     }
 }
 
 impl<'a, T> ColumnFamilyIteration for &'a mut T where T: ColumnFamilyIteration {
-    fn iter_cf_raw(&self, cf_handle: ColumnFamily) -> RawDatabaseIterator {
+    fn iter_cf_raw(&self, cf_handle: &ColumnFamily) -> RawDatabaseIterator {
         (**self).iter_cf_raw(cf_handle)
     }
 
     fn iter_cf_raw_opt(
         &self,
-        cf_handle: ColumnFamily,
+        cf_handle: &ColumnFamily,
         readopts: &ReadOptions
     ) -> RawDatabaseIterator {
         (**self).iter_cf_raw_opt(cf_handle, &readopts)
     }
 
-    fn iter_cf(&self, cf_handle: ColumnFamily, mode: DatabaseIteratorMode) -> DatabaseIterator {
+    fn iter_cf(&self, cf_handle: &ColumnFamily, mode: DatabaseIteratorMode) -> DatabaseIterator {
         (**self).iter_cf(cf_handle, mode)
     }
 
     fn iter_cf_full(
         &self,
-        cf_handle: ColumnFamily,
+        cf_handle: &ColumnFamily,
         mode: DatabaseIteratorMode
     ) -> DatabaseIterator {
         (**self).iter_cf_full(cf_handle, mode)
     }
 
-    fn iter_cf_prefix<'p>(&self, cf_handle: ColumnFamily, prefix: &'p [u8]) -> DatabaseIterator {
+    fn iter_cf_prefix<'p>(&self, cf_handle: &ColumnFamily, prefix: &'p [u8]) -> DatabaseIterator {
         (**self).iter_cf_prefix(cf_handle, &prefix)
     }
 }

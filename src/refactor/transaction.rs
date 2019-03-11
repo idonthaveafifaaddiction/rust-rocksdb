@@ -235,7 +235,7 @@ impl DatabaseReadOptOperations for Transaction {
 
     fn get_cf_opt(
         &self,
-        cf_handle: ColumnFamily,
+        cf_handle: &ColumnFamily,
         key: &[u8],
         readopts: &ReadOptions
     ) -> Result<Option<DatabaseVector>, Error> {
@@ -262,7 +262,7 @@ impl DatabaseReadNoOptOperations for Transaction {
 
     fn get_cf(
         &self,
-        cf_handle: ColumnFamily,
+        cf_handle: &ColumnFamily,
         key: &[u8]
     ) -> Result<Option<DatabaseVector>, Error> {
         let readopts = ReadOptions::default();
@@ -285,7 +285,7 @@ impl DatabaseWriteNoOptOperations for Transaction {
         )
     }
 
-    fn put_cf(&self, cf_handle: ColumnFamily, key: &[u8], value: &[u8]) -> Result<(), Error> {
+    fn put_cf(&self, cf_handle: &ColumnFamily, key: &[u8], value: &[u8]) -> Result<(), Error> {
         unsafe {
             try_ffi!(ffi::rocksdb_transaction_put_cf(
                 self.inner,
@@ -325,7 +325,7 @@ impl DatabaseWriteNoOptOperations for Transaction {
         )
     }
 
-    fn delete_cf(&self, cf_handle: ColumnFamily, key: &[u8]) -> Result<(), Error> {
+    fn delete_cf(&self, cf_handle: &ColumnFamily, key: &[u8]) -> Result<(), Error> {
         unsafe {
             try_ffi!(ffi::rocksdb_transaction_delete_cf(
                 self.inner,
@@ -350,7 +350,7 @@ impl DatabaseIteration for Transaction {
 impl ColumnFamilyIteration for Transaction {
     fn iter_cf_raw_opt(
         &self,
-        cf_handle: ColumnFamily,
+        cf_handle: &ColumnFamily,
         readopts: &ReadOptions
     ) -> RawDatabaseIterator {
         let iter = unsafe {
