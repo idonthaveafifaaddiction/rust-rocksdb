@@ -249,6 +249,9 @@ pub struct Snapshot {
     db: InnerDbType
 }
 
+unsafe impl Send for Snapshot {}
+unsafe impl Sync for Snapshot {}
+
 impl Drop for Snapshot {
     fn drop(&mut self) {
         match self.db {
