@@ -1,10 +1,45 @@
 extern crate cc;
 extern crate bindgen;
 extern crate glob;
+extern crate pkg_config;
 
-use std::env;
-use std::fs;
-use std::path::PathBuf;
+use std::{env, path::{Path, PathBuf}, fs};
+
+const ROCKSDB_VERSION: &'static str = "5.14.2";
+// FIXME the constants below are wrong
+const SNAPPY_VERSION: &'static str = "1.1.7";
+const LZ4_VERSION: &'static str = "";
+const ZSTD_VERSION: &'static str = "";
+const ZLIB_VERSION: &'static str = "";
+const BZIP2_VERSION: &'static str = "";
+
+// https://github.com/pingcap/grpc-rs/blob/fead789c219b011ffbba46d2794cc67cdcbdfd4e/grpc-sys/build.rs#L156
+fn get_env(name: &str) -> Option<String> {
+    println!("cargo:rerun-if-env-changed={}", name);
+    match env::var(name) {
+        Ok(s) => Some(s),
+        Err(env::VarError::NotPresent) => None,
+        Err(env::VarError::NotUnicode(s)) => {
+            panic!("unrecognize env var of {}: {:?}", name, s.to_string_lossy());
+        }
+    }
+}
+
+// https://github.com/pingcap/grpc-rs/blob/fead789c219b011ffbba46d2794cc67cdcbdfd4e/grpc-sys/build.rs#L28
+fn probe_library(
+    library: &str,
+    at_least_version: &str,
+    cargo_metadata: bool
+) -> Result<pkg_config::Library, String> {
+    match pkg_config::Config::new()
+        .atleast_version(at_least_version)
+        .cargo_metadata(cargo_metadata)
+        .probe(library)
+    {
+        Ok(lib) => Ok(lib),
+        Err(e) => Err(format!("Cannot find library {} via pkg-config: {:?}", library, e)),
+    }
+}
 
 fn link(name: &str, bundled: bool) {
     use std::env::var;
@@ -30,8 +65,50 @@ fn fail_on_empty_directory(name: &str) {
     }
 }
 
-fn bindgen_rocksdb() {
-    let bindings = bindgen::Builder::default()
+fn bindgen_rocksdb(rocksdb_lib_info: Option<pkg_config::Library>) {
+    // FIXME make note aboue stupid buildroot hack
+    let include_paths = if let Some(lib_info) = rocksdb_lib_info {
+        let mut include_paths: Vec<_> = lib_info
+            .include_paths
+            .iter()
+            .map(|path| path.to_str().expect("Failed to stringify include path").to_owned())
+            .collect();
+        let sysroot = &get_env("PKG_CONFIG_SYSROOT_DIR").unwrap();
+        let buildroot_staging_dir = Path::new(sysroot)
+            .parent()
+            .expect("Failed to get buildroot output directory")
+            .join("staging");
+        if buildroot_staging_dir.is_dir() {
+            include_paths.extend(lib_info.include_paths.iter().filter_map(|path| {
+                if path.starts_with(sysroot) {
+                    Some(
+                        buildroot_staging_dir
+                            .join(path.strip_prefix(sysroot).unwrap())
+                            .to_str()
+                            .unwrap()
+                            .to_owned()
+                    )
+                } else {
+                    None
+                }
+            }));
+        }
+
+        include_paths
+    } else {
+        vec!["rocksdb/include".into()]
+    };
+
+    // FIXME recursively include all the rocksdb files if we are building rocksdb ourselves.
+    println!("cargo:rerun-if-changed=rocksdb/include/rocksdb/c.h");
+    println!("cargo:rerun-if-changed=rocksdb/db/c.cc");
+    println!("cargo:rerun-if-changed=rocksdb/utilities/backupable/backupable_db.cc");
+
+    let bindings = include_paths
+        .iter()
+        .fold(bindgen::Builder::default(), |builder, include_path| {
+            builder.clang_arg(format!("-I{}", include_path))
+        })
         .header("rocksdb/include/rocksdb/c.h")
         .blacklist_type("max_align_t") // https://github.com/rust-lang-nursery/rust-bindgen/issues/550
         .ctypes_prefix("libc")
@@ -49,7 +126,7 @@ fn build_rocksdb() {
     config.include("rocksdb/include/");
     config.include("rocksdb/");
     config.include("rocksdb/third-party/gtest-1.7.0/fused-src/");
-    
+
     if cfg!(feature = "snappy") {
         config.define("SNAPPY", Some("1"));
         config.include("snappy/");
@@ -70,7 +147,7 @@ fn build_rocksdb() {
         config.define("ZLIB", Some("1"));
         config.include("zlib/");
     }
-    
+
     if cfg!(feature = "bzip2") {
         config.define("BZIP2", Some("1"));
         config.include("bzip2/");
@@ -176,7 +253,7 @@ fn build_snappy() {
 
 fn build_lz4() {
     let mut compiler = cc::Build::new();
-    
+
     compiler
         .file("lz4/lib/lz4.c")
         .file("lz4/lib/lz4frame.c")
@@ -198,7 +275,7 @@ fn build_lz4() {
 
 fn build_zstd() {
     let mut compiler = cc::Build::new();
-    
+
     compiler.include("zstd/lib/");
     compiler.include("zstd/lib/common");
     compiler.include("zstd/lib/legacy");
@@ -226,7 +303,7 @@ fn build_zstd() {
 
 fn build_zlib() {
     let mut compiler = cc::Build::new();
-    
+
     let globs = &[
         "zlib/*.c"
     ];
@@ -244,7 +321,7 @@ fn build_zlib() {
 
 fn build_bzip2() {
     let mut compiler = cc::Build::new();
-    
+
     compiler
         .file("bzip2/blocksort.c")
         .file("bzip2/bzlib.c")
@@ -262,53 +339,86 @@ fn build_bzip2() {
     compiler.compile("libbz2.a");
 }
 
-fn try_to_find_and_link_lib(lib_name: &str) -> bool {
-    if let Ok(lib_dir) = env::var(&format!("{}_LIB_DIR", lib_name)) {
-        println!("cargo:rustc-link-search=native={}", lib_dir);
-        let mode = match env::var_os(&format!("{}_STATIC", lib_name)) {
-            Some(_) => "static",
-            None => "dylib",
-        };
-        println!("cargo:rustc-link-lib={}={}", mode, lib_name.to_lowercase());
-        return true;
-    }
-    false
-}
-
+// FIXME clean this mess up
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+
+    let use_pkg_config = get_env("LIBROCKSDB_SYS_USE_PKG_CONFIG").map_or(false, |s| s == "1");
+
+    // FIXME remove?
+    if let Some(link_search_native_dir) = get_env("LIBROCKSDB_SYS_LINK_SEARCH_NATIVE_DIR") {
+        println!("cargo:rustc-link-search-native={}", link_search_native_dir);
+    }
+
     println!("cargo:rerun-if-changed=rocksdb/");
-    println!("cargo:rerun-if-changed=snappy/");
-    println!("cargo:rerun-if-changed=lz4/");
-    println!("cargo:rerun-if-changed=zstd/");
-    println!("cargo:rerun-if-changed=zlib/");
-    println!("cargo:rerun-if-changed=bzip2/");
-
     fail_on_empty_directory("rocksdb");
-    fail_on_empty_directory("snappy");
-    fail_on_empty_directory("lz4");
-    fail_on_empty_directory("zstd");
-    fail_on_empty_directory("zlib");
-    fail_on_empty_directory("bzip2");
 
-    bindgen_rocksdb();
+    let rocksdb_lib_info = if use_pkg_config {
+        match probe_library("librocksdb", ROCKSDB_VERSION, true) {
+            Ok(lib_info) => Some(lib_info),
+            Err(err) => panic!("{}", err)
+        }
+    } else {
+        None
+    };
+    bindgen_rocksdb(rocksdb_lib_info);
 
-    if !try_to_find_and_link_lib("ROCKSDB") {
+    if !use_pkg_config {
         build_rocksdb();
     }
-    if cfg!(feature = "snappy") && !try_to_find_and_link_lib("SNAPPY") {
-        build_snappy();
+
+    if cfg!(feature = "snappy") {
+        if !use_pkg_config {
+            fail_on_empty_directory("snappy");
+            println!("cargo:rerun-if-changed=snappy/");
+            build_snappy();
+        } else if let Err(err) = probe_library("libsnappy", SNAPPY_VERSION, true) {
+            eprintln!("{}", err);
+            println!("cargo:rustc-link-lib=dylib=snappy");
+        }
     }
-    if cfg!(feature = "lz4") && !try_to_find_and_link_lib("LZ4") {
-        build_lz4();
+
+    if cfg!(feature = "lz4") {
+        if !use_pkg_config {
+            fail_on_empty_directory("lz4");
+            println!("cargo:rerun-if-changed=lz4/");
+            build_lz4();
+        } else if let Err(err) = probe_library("liblz4", LZ4_VERSION, true) {
+            eprintln!("{}", err);
+            println!("cargo:rustc-link-lib=dylib=lz4");
+        }
     }
-    if cfg!(feature = "zstd") && !try_to_find_and_link_lib("ZSTD") {
-        build_zstd();
+
+    if cfg!(feature = "zstd") {
+        if !use_pkg_config {
+            fail_on_empty_directory("zstd");
+            println!("cargo:rerun-if-changed=zstd/");
+            build_zstd();
+        } else if let Err(err) = probe_library("libzstd", ZSTD_VERSION, true) {
+            eprintln!("{}", err);
+            println!("cargo:rustc-link-lib=dylib=zstd");
+        }
     }
-    if cfg!(feature = "zlib") && !try_to_find_and_link_lib("ZLIB") {
-        build_zlib();
+
+    if cfg!(feature = "zlib") {
+        if !use_pkg_config {
+            fail_on_empty_directory("zlib");
+            println!("cargo:rerun-if-changed=zlib/");
+            build_zlib();
+        } else if let Err(err) = probe_library("libzlib", ZLIB_VERSION, true) {
+            eprintln!("{}", err);
+            println!("cargo:rustc-link-lib=dylib=zlib");
+        }
     }
-    if cfg!(feature = "bzip2") && !try_to_find_and_link_lib("BZIP2") {
-        build_bzip2();
+
+    if cfg!(feature = "bzip2") {
+        if !use_pkg_config {
+            fail_on_empty_directory("bzip2");
+            println!("cargo:rerun-if-changed=bzip2/");
+            build_bzip2();
+        } else if let Err(err) = probe_library("libbzip2", BZIP2_VERSION, true) {
+            eprintln!("{}", err);
+            println!("cargo:rustc-link-lib=dylib=bzip2");
+        }
     }
 }

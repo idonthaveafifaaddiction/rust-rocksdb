@@ -61,6 +61,9 @@ mod db;
 mod db_options;
 mod slice_transform;
 
+// FIXME
+pub mod refactor;
+
 pub use compaction_filter::Decision as CompactionDecision;
 pub use db::{DBCompactionStyle, DBCompressionType, DBIterator, DBRawIterator, DBRecoveryMode,
              DBVector, ReadOptions, Direction, IteratorMode, Snapshot, WriteBatch,
